@@ -231,12 +231,14 @@ class GridController(ABC):
 
     def __init__(self, stations: List[ChargingStation], grid_limit_kw: float,
                  limit_policy: Optional['GridLimitPolicy'] = None,
-                 background_load: Optional[np.ndarray] = None):
+                 background_load: Optional[np.ndarray] = None,
+                 vehicle_time_budgets: Optional[Dict[str, float]] = None):
         self.stations = stations
         self.queue = WaitingQueue()
         self.grid_limit_kw = grid_limit_kw
         self.limit_policy = limit_policy or GridLimitPolicy(base_limit_kw=grid_limit_kw)
         self.background_load = background_load if background_load is not None else np.zeros(1440)
+        self.vehicle_time_budgets: Dict[str, float] = vehicle_time_budgets or {}
         self.power_log: List[float] = []
         self.grid_limit_log: List[float] = []
         self.completed_sessions: List[EV] = []
@@ -262,9 +264,7 @@ class GridController(ABC):
         pass
 
     def dispatch_waiting_evs(self, minute: int) -> None:
-        """Assign queued EVs to free stations using SPT (Shortest Processing Time).
-        Instead of FIFO, pick the car that will complete fastest — reduces average wait.
-        Only ManagedController overrides this; UnmanagedController uses base FIFO."""
+        """Assign queued EVs to free stations using SPT (Shortest Processing Time)."""
         for station in self.stations:
             if station.is_available() and not self.queue.is_empty():
                 ev = self.queue.dequeue()
@@ -313,67 +313,44 @@ class UnmanagedController(GridController):
 
 
 class ManagedController(GridController):
-    """Controlled: Dynamic Priority Allocation with adaptive extension ratio.
+    """Controlled: Dynamic Priority Allocation with HRRN & Greedy Waterfall."""
 
-    Each tick:
-      1. Compute system-state signals (congestion, grid stress, urgency)
-      2. Derive dynamic max_extension_ratio — limits how much any vehicle's
-         charge time can grow relative to its unmanaged baseline
-      3. Floor = max_power / ratio  (bounded extension guarantee)
-      4. Remaining budget distributed proportional to per-vehicle priority score
-         score = 0.40 * soc_urgency + 0.35 * completion_proximity + 0.25 * wait_factor
-    """
+    EXTENSION_FACTOR = 1.2  # Legacy for compatibility if needed elsewhere
 
-    def _compute_priority_score(self, ev: EV, current_minute: int) -> float:
-        soc_urgency = 1.0 - ev.current_soc
-
-        total_energy = max((ev.target_soc - ev.initial_soc) * ev.battery_capacity_kwh, 1e-6)
-        completion_proximity = float(np.clip(1.0 - ev.energy_needed_kwh / total_energy, 0.0, 1.0))
-
-        if ev.charge_start_minute is None:
-            wait_minutes = current_minute - ev.arrival_minute
-        else:
-            wait_minutes = ev.wait_time_minutes
-        wait_factor = min(wait_minutes / 30.0, 1.0)
-
-        return 0.40 * soc_urgency + 0.35 * completion_proximity + 0.25 * wait_factor
-
-    def _compute_dynamic_ratio(self, grid_limit_kw: float, baseline_kw: float) -> float:
-        """Adaptive ratio driven by live system signals.
-
-        Signals:
-          congestion  — queue pressure relative to station count
-          grid_stress — how much of the grid budget baseline already consumes
-          urgency     — mean SoC deficit of vehicles currently charging
+    def _dispatch_score(self, ev: EV, station: 'ChargingStation', minute: int) -> float:
         """
-        congestion = min(len(self.queue) / max(len(self.stations), 1), 1.0)
-        grid_stress = min(baseline_kw / max(grid_limit_kw, 1e-6), 1.0)
-
-        charging_evs = [s.current_ev for s in self.stations
-                        if s.current_ev and not s.current_ev.is_satisfied]
-        urgency = float(np.mean([1.0 - ev.current_soc for ev in charging_evs])) \
-                  if charging_evs else 0.0
-
-        ratio = 1.5 + congestion * 2.0 + grid_stress * 1.0 + urgency * 0.5
-        return float(np.clip(ratio, 1.2, 5.0))
+        HRRN (Highest Response Ratio Next) Mantığı:
+        Dışarıda bekleyen isyan etmesin diye bekleme süresi skoru artırır.
+        """
+        eff_power = min(ev.max_dc_power_kw, station.max_power_kw)
+        if eff_power <= 0:
+            return -9999.0
+            
+        min_charge_min = (ev.energy_needed_kwh / eff_power) * 60.0
+        wait_time = minute - ev.arrival_minute
+        
+        # 1 dakika bekleme, işin 2 dakika kısaymış gibi öncelik verir
+        return (wait_time * 2.0) - min_charge_min
 
     def dispatch_waiting_evs(self, minute: int) -> None:
-        """Priority-based dispatch: highest-score EV in queue enters next free station."""
+        """Dispatch based on the new _dispatch_score (HRRN)."""
         for station in self.stations:
-            if station.is_available() and not self.queue.is_empty():
-                best_ev = max(
-                    self.queue.queue,
-                    key=lambda ev: self._compute_priority_score(ev, minute),
-                )
-                self.queue.queue.remove(best_ev)
-                station.plug_in(best_ev)
-                best_ev.charge_start_minute = minute
+            if not station.is_available() or self.queue.is_empty():
+                continue
+            best_ev = max(
+                self.queue.queue,
+                key=lambda ev: self._dispatch_score(ev, station, minute),
+            )
+            self.queue.queue.remove(best_ev)
+            station.plug_in(best_ev)
+            best_ev.charge_start_minute = minute
 
     def allocate_power(self, baseline_kw: float, minute: int, grid_limit_kw: float) -> Dict[str, float]:
         occupied_stations = [s for s in self.stations if not s.is_available()]
+        allocations = {s.station_id: 0.0 for s in self.stations}
 
         if not occupied_stations:
-            return {s.station_id: 0.0 for s in self.stations}
+            return allocations
 
         available_budget = max(0.0, grid_limit_kw - baseline_kw - 0.01)
 
@@ -384,51 +361,35 @@ class ManagedController(GridController):
                 continue
             max_power = station.effective_max_power_kw()
             if ev.energy_needed_kwh > 0.0 and max_power > 0.0:
+                time_to_finish = ev.energy_needed_kwh / max_power
                 vehicles.append({
                     'station_id': station.station_id,
-                    'ev': ev,
                     'max_power': max_power,
-                    'priority': self._compute_priority_score(ev, minute),
+                    'time_to_finish': time_to_finish
                 })
 
         if not vehicles:
-            return {s.station_id: 0.0 for s in self.stations}
+            return allocations
 
-        # Dynamic floor: max_power / ratio guarantees bounded charge-time extension.
-        # ratio adapts every tick — low congestion → ratio ~1.5 (barely throttle),
-        # high congestion + stressed grid → ratio up to 5.0 (spread power more).
-        ratio = self._compute_dynamic_ratio(grid_limit_kw, baseline_kw)
-
-        allocations: Dict[str, float] = {}
-        floor_total = 0.0
+        # ADIM 1: Herkese Minimum "Can Suyu" (22 kW) - Soket Kilitlenmesini Önler
+        MIN_POWER = 22.0
         for v in vehicles:
-            floor = v['max_power'] / ratio
-            allocations[v['station_id']] = floor
-            floor_total += floor
+            give = min(MIN_POWER, v['max_power'], available_budget)
+            allocations[v['station_id']] = give
+            available_budget -= give
 
-        if floor_total > available_budget:
-            scale = available_budget / floor_total
-            allocations = {sid: p * scale for sid, p in allocations.items()}
-            greedy_budget = 0.0
-        else:
-            greedy_budget = available_budget - floor_total
+        # ADIM 2: Kalan bütçeyi işi en çabuk bitecek olanlara bas (Şelale / Greedy)
+        vehicles.sort(key=lambda x: x['time_to_finish'])
 
-        # Priority-weighted distribution of remaining budget
-        if greedy_budget > 0.0:
-            total_priority = sum(v['priority'] for v in vehicles)
-            if total_priority > 0.0:
-                for v in vehicles:
-                    share = (v['priority'] / total_priority) * greedy_budget
-                    headroom = v['max_power'] - allocations[v['station_id']]
-                    allocations[v['station_id']] += min(share, max(headroom, 0.0))
-
-        for station in occupied_stations:
-            if station.current_ev.is_satisfied:
-                allocations[station.station_id] = 0.0
-
-        for station in self.stations:
-            if station.station_id not in allocations:
-                allocations[station.station_id] = 0.0
+        for v in vehicles:
+            if available_budget <= 0.1:
+                break
+            
+            headroom = v['max_power'] - allocations[v['station_id']]
+            if headroom > 0:
+                give = min(headroom, available_budget)
+                allocations[v['station_id']] += give
+                available_budget -= give
 
         return allocations
 
@@ -455,7 +416,7 @@ class ArrivalGenerator:
 
     def generate_arrivals(self, rng: np.random.Generator) -> Dict[int, List[EV]]:
         """Generate 24-hour arrival schedule."""
-        arrival_minutes = self._bimodal_arrival_minutes(rng, self.daily_ev_count)
+        arrival_minutes = self._trimodal_arrival_minutes(rng, self.daily_ev_count)
 
         schedule: Dict[int, List[EV]] = {}
         for i, minute in enumerate(arrival_minutes):
@@ -478,15 +439,17 @@ class ArrivalGenerator:
 
         return schedule
 
-    def _bimodal_arrival_minutes(self, rng: np.random.Generator, count: int) -> np.ndarray:
-        """Bimodal distribution: morning (08:00) and evening (18:00)."""
-        n_morning = count // 2
-        n_evening = count - n_morning
+    def _trimodal_arrival_minutes(self, rng: np.random.Generator, count: int) -> np.ndarray:
+        """Trimodal distribution for urban Turkey: morning (09:30), lunch (13:00), evening (18:30)."""
+        n_morning = count // 5          # ~20% — esnaf / kuaför / sabah üst yük
+        n_lunch   = count // 4          # ~25% — öğle arası hızlı şarj
+        n_evening = count - n_morning - n_lunch  # ~55% — iş sonrası / AVM
 
-        morning = rng.normal(480, 60, n_morning)
-        evening = rng.normal(1080, 60, n_evening)
+        morning = rng.normal(570, 40, n_morning)
+        lunch   = rng.normal(780, 35, n_lunch)
+        evening = rng.normal(1110, 75, n_evening)
 
-        arrivals = np.concatenate([morning, evening])
+        arrivals = np.concatenate([morning, lunch, evening])
         rng.shuffle(arrivals)
         return np.clip(arrivals, 0, 1439)
 
@@ -497,15 +460,7 @@ class ArrivalGenerator:
 
 
 class BackgroundLoadGenerator:
-    """1440-dakikalık şebeke arka plan yük profili üretir.
-
-    Gerçekçi günlük tüketim modeli:
-      - Gece (00-06): düşük baz yük ~40-60 kW
-      - Sabah rampa + ofis tepe (09:00): +70 kW
-      - Öğleden sonra plato: ~130-160 kW
-      - Akşam konut tepe (19:00): +100 kW
-      - Rasgele gürültü: ±15 kW
-    """
+    """1440-dakikalık şebeke arka plan yük profili üretir."""
 
     @staticmethod
     def generate(rng: np.random.Generator) -> np.ndarray:
@@ -690,7 +645,7 @@ class ExecutiveDashboard:
                              f"{h:.0f}", ha="center", va="bottom", fontsize=7)
 
         # ------------------------------------------------------------------
-        # Panel 4: Wait Time by Model  (DÜZELTILDI)
+        # Panel 4: Wait Time by Model
         # ------------------------------------------------------------------
         model_wait_um: Dict[str, list] = {}
         model_wait_mg: Dict[str, list] = {}
@@ -749,7 +704,7 @@ class ExecutiveDashboard:
             f"Servis Verilen   : {result_managed.metrics_summary.evs_completed} araç\n"
             f"Ort. Bekleme     : {result_unmanaged.metrics_summary.avg_delay_minutes:.1f} → "
             f"{result_managed.metrics_summary.avg_delay_minutes:.1f} dk  (+{delay_inc:.1f} dk)\n\n"
-            f"Algoritma        : Dinamik Priority + TOU\n"
+            f"Algoritma        : Dinamik Priority (HRRN) + TOU\n"
             f"Baz Limit        : {result_managed.metrics_summary.avg_grid_limit_kw:.0f} kW (ort.)\n"
             f"Pik Boost        : {result_managed.grid_limit_timeseries.max():.0f} kW\n"
             f"Boost Süresi     : {result_managed.metrics_summary.peak_boost_minutes} dk"
@@ -840,7 +795,7 @@ class ExecutiveDashboard:
         ax7.legend(fontsize=9, loc="upper right")
         ax7.grid(True, alpha=0.3, axis="y")
 
-        plt.savefig("F:/LoadBalancing/executive_dashboard_tr.png", dpi=150, bbox_inches="tight")
+        plt.savefig("executive_dashboard_tr.png", dpi=150, bbox_inches="tight")
         print("✓ Türkçe yönetici dashboard kaydedildi: executive_dashboard_tr.png")
         plt.show()
 
@@ -966,7 +921,7 @@ def main(generate_new: bool = False):
     print("EV Yük Dengeleme Simülasyonu v3 başlatılıyor...")
 
     # Dataset management
-    dataset_file = "F:/LoadBalancing/dataset.json"
+    dataset_file = "dataset.json" # Dizin yolunu kendi ortamına göre ayarlarsın
     rng_bg = np.random.default_rng(seed=99)  # separate RNG for background load
 
     if not generate_new and __import__('os').path.exists(dataset_file):
@@ -1026,25 +981,19 @@ def main(generate_new: bool = False):
             }, f, indent=2)
         print(f"✓ Veri seti kaydedildi: {len(vehicles_data)} araç, arka plan yük profili dahil")
 
-    # Stations: Tüm istasyonlar aynı capacity → soket assignment fair
-    # (aksi halde, scenario A/B'de farklı istasyonlara giden araçlar farklı güç alır)
-    STATION_MAX_KW = 300.0  # All stations identical capacity
     stations_a = [
-        ChargingStation("S1", StationType.ULTRA_FAST, STATION_MAX_KW),
-        ChargingStation("S2", StationType.FAST, STATION_MAX_KW),
-        ChargingStation("S3", StationType.FAST, STATION_MAX_KW),
-        ChargingStation("S4", StationType.STANDARD, STATION_MAX_KW),
-        ChargingStation("S5", StationType.STANDARD, STATION_MAX_KW),
+        ChargingStation("S1", StationType.ULTRA_FAST, 200.0),
+        ChargingStation("S2", StationType.ULTRA_FAST, 200.0),
+        ChargingStation("S3", StationType.FAST,       180.0),
+        ChargingStation("S4", StationType.FAST,       180.0),
+        ChargingStation("S5", StationType.STANDARD,   120.0),
     ]
     stations_b = [copy.deepcopy(s) for s in stations_a]
 
-    # CRITICAL: Deepcopy BEFORE running any scenario to ensure identical vehicles
-    # AND reset all EV states to initial conditions
     print("\n⚙️  Senaryo A (Kontrol Öncesi) çalıştırılıyor...")
     schedule_a = copy.deepcopy(arrival_schedule)
     schedule_b = copy.deepcopy(arrival_schedule)
 
-    # Reset all EVs to initial state (critical for fair comparison)
     for minute_evs_a in schedule_a.values():
         for ev in minute_evs_a:
             ev.current_soc = ev.initial_soc
@@ -1063,22 +1012,14 @@ def main(generate_new: bool = False):
             ev.departure_minute = None
             ev.energy_delivered_kwh = 0.0
 
-    # SANITY CHECK: Verify schedule_a and schedule_b have identical vehicles
-    vehicles_a = [(ev.session_id, ev.initial_soc, ev.battery_capacity_kwh) for minute_evs in schedule_a.values() for ev in minute_evs]
-    vehicles_b = [(ev.session_id, ev.initial_soc, ev.battery_capacity_kwh) for minute_evs in schedule_b.values() for ev in minute_evs]
-    vehicles_a.sort()
-    vehicles_b.sort()
-    if vehicles_a != vehicles_b:
-        print("⚠️  HATA: schedule_a ve schedule_b farklı araçlar içeriyor!")
-        print(f"  A: {len(vehicles_a)}, B: {len(vehicles_b)}")
-        if len(vehicles_a) > 0 and len(vehicles_b) > 0:
-            print(f"  İlk araç A: {vehicles_a[0]}, B: {vehicles_b[0]}")
-    else:
-        print("✓ Schedule kontrol: A ve B özdeş araçlar")
-
     controller_a = UnmanagedController(stations_a, 400.0, background_load=background_load)
     result_a = Simulation(controller_a, schedule_a).run()
     print(f"   ✓ Tamamlandı: Pik={result_a.metrics_summary.peak_power_kw:.0f}kW, Aşım={result_a.metrics_summary.overload_minutes}dk")
+
+    vehicle_time_budgets = {
+        s.session_id: (s.wait_time_minutes + s.charge_time_minutes) * ManagedController.EXTENSION_FACTOR
+        for s in result_a.vehicle_sessions
+    }
 
     print("⚙️  Senaryo B (Kontrol Sonrası — TOU Dinamik Limit) çalıştırılıyor...")
     tou_policy = GridLimitPolicy(
@@ -1089,7 +1030,12 @@ def main(generate_new: bool = False):
         evening_peak_start=1020,  # 17:00
         evening_peak_end=1200,    # 20:00
     )
-    controller_b = ManagedController(stations_b, 400.0, limit_policy=tou_policy, background_load=background_load)
+    controller_b = ManagedController(
+        stations_b, 400.0,
+        limit_policy=tou_policy,
+        background_load=background_load,
+        vehicle_time_budgets=vehicle_time_budgets,
+    )
     result_b = Simulation(controller_b, schedule_b).run()
     print(f"   ✓ Tamamlandı: Pik={result_b.metrics_summary.peak_power_kw:.0f}kW, Aşım={result_b.metrics_summary.overload_minutes}dk")
 
@@ -1105,8 +1051,6 @@ def main(generate_new: bool = False):
 
 
 if __name__ == "__main__":
-    import os
-
     parser = argparse.ArgumentParser(description="EV Yük Dengeleme Simülasyonu v3")
     parser.add_argument("--generate-new", action="store_true", help="Yeni veri seti oluştur")
     args = parser.parse_args()

@@ -1,12 +1,12 @@
 {
-  "timestamp": "2026-04-23T16:26:48.811585",
+  "timestamp": "2026-04-23T17:46:12.576529",
   "vehicles": [
     {
       "session_id": "EV_07",
       "model_name": "Porsche Taycan",
       "battery_capacity_kwh": 93.4,
       "max_dc_power_kw": 270.0,
-      "arrival_minute": 362,
+      "arrival_minute": 491,
       "initial_soc": 0.46343227628304284
     },
     {
@@ -14,7 +14,7 @@
       "model_name": "Renault Megane",
       "battery_capacity_kwh": 60.0,
       "max_dc_power_kw": 130.0,
-      "arrival_minute": 401,
+      "arrival_minute": 517,
       "initial_soc": 0.2823105159334445
     },
     {
@@ -22,103 +22,39 @@
       "model_name": "Renault Megane",
       "battery_capacity_kwh": 60.0,
       "max_dc_power_kw": 130.0,
-      "arrival_minute": 417,
+      "arrival_minute": 528,
       "initial_soc": 0.3075433441545796
-    },
-    {
-      "session_id": "EV_17",
-      "model_name": "BYD Atto 3",
-      "battery_capacity_kwh": 60.4,
-      "max_dc_power_kw": 88.0,
-      "arrival_minute": 422,
-      "initial_soc": 0.33363918756509425
-    },
-    {
-      "session_id": "EV_08",
-      "model_name": "BYD Atto 3",
-      "battery_capacity_kwh": 60.4,
-      "max_dc_power_kw": 88.0,
-      "arrival_minute": 428,
-      "initial_soc": 0.20634798458380785
     },
     {
       "session_id": "EV_40",
       "model_name": "Tesla Model Y",
       "battery_capacity_kwh": 75.0,
       "max_dc_power_kw": 250.0,
-      "arrival_minute": 428,
+      "arrival_minute": 535,
       "initial_soc": 0.4319158972529653
-    },
-    {
-      "session_id": "EV_42",
-      "model_name": "Porsche Taycan",
-      "battery_capacity_kwh": 93.4,
-      "max_dc_power_kw": 270.0,
-      "arrival_minute": 439,
-      "initial_soc": 0.21636713525604745
-    },
-    {
-      "session_id": "EV_06",
-      "model_name": "Togg T10X",
-      "battery_capacity_kwh": 88.5,
-      "max_dc_power_kw": 150.0,
-      "arrival_minute": 454,
-      "initial_soc": 0.14720236084820615
     },
     {
       "session_id": "EV_31",
       "model_name": "Tesla Model Y RWD",
       "battery_capacity_kwh": 60.0,
       "max_dc_power_kw": 170.0,
-      "arrival_minute": 461,
+      "arrival_minute": 557,
       "initial_soc": 0.2755645841220187
-    },
-    {
-      "session_id": "EV_09",
-      "model_name": "Porsche Taycan",
-      "battery_capacity_kwh": 93.4,
-      "max_dc_power_kw": 270.0,
-      "arrival_minute": 468,
-      "initial_soc": 0.41150036158631786
-    },
-    {
-      "session_id": "EV_46",
-      "model_name": "Porsche Taycan",
-      "battery_capacity_kwh": 93.4,
-      "max_dc_power_kw": 270.0,
-      "arrival_minute": 470,
-      "initial_soc": 0.4566709065019656
-    },
-    {
-      "session_id": "EV_26",
-      "model_name": "Tesla Model Y RWD",
-      "battery_capacity_kwh": 60.0,
-      "max_dc_power_kw": 170.0,
-      "arrival_minute": 477,
-      "initial_soc": 0.4130940909001145
     },
     {
       "session_id": "EV_36",
       "model_name": "BYD Atto 3",
       "battery_capacity_kwh": 60.4,
       "max_dc_power_kw": 88.0,
-      "arrival_minute": 478,
+      "arrival_minute": 569,
       "initial_soc": 0.39079784571475307
-    },
-    {
-      "session_id": "EV_22",
-      "model_name": "Tesla Model Y RWD",
-      "battery_capacity_kwh": 60.0,
-      "max_dc_power_kw": 170.0,
-      "arrival_minute": 483,
-      "initial_soc": 0.16823718741475446
     },
     {
       "session_id": "EV_01",
       "model_name": "Tesla Model Y RWD",
       "battery_capacity_kwh": 60.0,
       "max_dc_power_kw": 170.0,
-      "arrival_minute": 487,
+      "arrival_minute": 575,
       "initial_soc": 0.16450871161344072
     },
     {
@@ -126,15 +62,79 @@
       "model_name": "Tesla Model Y RWD",
       "battery_capacity_kwh": 60.0,
       "max_dc_power_kw": 170.0,
-      "arrival_minute": 498,
+      "arrival_minute": 582,
       "initial_soc": 0.1707091131756927
+    },
+    {
+      "session_id": "EV_04",
+      "model_name": "Tesla Model Y",
+      "battery_capacity_kwh": 75.0,
+      "max_dc_power_kw": 250.0,
+      "arrival_minute": 600,
+      "initial_soc": 0.22060483565915062
+    },
+    {
+      "session_id": "EV_10",
+      "model_name": "BYD Atto 3",
+      "battery_capacity_kwh": 60.4,
+      "max_dc_power_kw": 88.0,
+      "arrival_minute": 607,
+      "initial_soc": 0.2797446008575155
+    },
+    {
+      "session_id": "EV_17",
+      "model_name": "BYD Atto 3",
+      "battery_capacity_kwh": 60.4,
+      "max_dc_power_kw": 88.0,
+      "arrival_minute": 746,
+      "initial_soc": 0.33363918756509425
+    },
+    {
+      "session_id": "EV_08",
+      "model_name": "BYD Atto 3",
+      "battery_capacity_kwh": 60.4,
+      "max_dc_power_kw": 88.0,
+      "arrival_minute": 749,
+      "initial_soc": 0.20634798458380785
+    },
+    {
+      "session_id": "EV_42",
+      "model_name": "Porsche Taycan",
+      "battery_capacity_kwh": 93.4,
+      "max_dc_power_kw": 270.0,
+      "arrival_minute": 756,
+      "initial_soc": 0.21636713525604745
+    },
+    {
+      "session_id": "EV_09",
+      "model_name": "Porsche Taycan",
+      "battery_capacity_kwh": 93.4,
+      "max_dc_power_kw": 270.0,
+      "arrival_minute": 773,
+      "initial_soc": 0.41150036158631786
+    },
+    {
+      "session_id": "EV_26",
+      "model_name": "Tesla Model Y RWD",
+      "battery_capacity_kwh": 60.0,
+      "max_dc_power_kw": 170.0,
+      "arrival_minute": 778,
+      "initial_soc": 0.4130940909001145
+    },
+    {
+      "session_id": "EV_22",
+      "model_name": "Tesla Model Y RWD",
+      "battery_capacity_kwh": 60.0,
+      "max_dc_power_kw": 170.0,
+      "arrival_minute": 782,
+      "initial_soc": 0.16823718741475446
     },
     {
       "session_id": "EV_03",
       "model_name": "BYD Atto 3",
       "battery_capacity_kwh": 60.4,
       "max_dc_power_kw": 88.0,
-      "arrival_minute": 502,
+      "arrival_minute": 792,
       "initial_soc": 0.2784625102296123
     },
     {
@@ -142,23 +142,15 @@
       "model_name": "MG4 Standard",
       "battery_capacity_kwh": 51.0,
       "max_dc_power_kw": 117.0,
-      "arrival_minute": 508,
+      "arrival_minute": 796,
       "initial_soc": 0.14309637838235864
-    },
-    {
-      "session_id": "EV_04",
-      "model_name": "Tesla Model Y",
-      "battery_capacity_kwh": 75.0,
-      "max_dc_power_kw": 250.0,
-      "arrival_minute": 525,
-      "initial_soc": 0.22060483565915062
     },
     {
       "session_id": "EV_13",
       "model_name": "Togg T10X",
       "battery_capacity_kwh": 88.5,
       "max_dc_power_kw": 150.0,
-      "arrival_minute": 526,
+      "arrival_minute": 807,
       "initial_soc": 0.222382649660261
     },
     {
@@ -166,7 +158,7 @@
       "model_name": "Togg T10X",
       "battery_capacity_kwh": 88.5,
       "max_dc_power_kw": 150.0,
-      "arrival_minute": 532,
+      "arrival_minute": 810,
       "initial_soc": 0.4834236852965782
     },
     {
@@ -174,63 +166,47 @@
       "model_name": "Togg T10X",
       "battery_capacity_kwh": 88.5,
       "max_dc_power_kw": 150.0,
-      "arrival_minute": 532,
+      "arrival_minute": 810,
       "initial_soc": 0.4305167696777431
-    },
-    {
-      "session_id": "EV_10",
-      "model_name": "BYD Atto 3",
-      "battery_capacity_kwh": 60.4,
-      "max_dc_power_kw": 88.0,
-      "arrival_minute": 536,
-      "initial_soc": 0.2797446008575155
     },
     {
       "session_id": "EV_28",
       "model_name": "Tesla Model Y RWD",
       "battery_capacity_kwh": 60.0,
       "max_dc_power_kw": 170.0,
-      "arrival_minute": 547,
+      "arrival_minute": 819,
       "initial_soc": 0.47513058198999314
-    },
-    {
-      "session_id": "EV_19",
-      "model_name": "Tesla Model Y",
-      "battery_capacity_kwh": 75.0,
-      "max_dc_power_kw": 250.0,
-      "arrival_minute": 553,
-      "initial_soc": 0.116645669544757
     },
     {
       "session_id": "EV_33",
       "model_name": "Renault Megane",
       "battery_capacity_kwh": 60.0,
       "max_dc_power_kw": 130.0,
-      "arrival_minute": 1029,
+      "arrival_minute": 1046,
       "initial_soc": 0.15609963559944431
-    },
-    {
-      "session_id": "EV_27",
-      "model_name": "Togg T10X",
-      "battery_capacity_kwh": 88.5,
-      "max_dc_power_kw": 150.0,
-      "arrival_minute": 1030,
-      "initial_soc": 0.29466333233526415
     },
     {
       "session_id": "EV_23",
       "model_name": "Renault Megane",
       "battery_capacity_kwh": 60.0,
       "max_dc_power_kw": 130.0,
-      "arrival_minute": 1031,
+      "arrival_minute": 1048,
       "initial_soc": 0.332424455880158
+    },
+    {
+      "session_id": "EV_27",
+      "model_name": "Togg T10X",
+      "battery_capacity_kwh": 88.5,
+      "max_dc_power_kw": 150.0,
+      "arrival_minute": 1048,
+      "initial_soc": 0.29466333233526415
     },
     {
       "session_id": "EV_00",
       "model_name": "Togg T10X",
       "battery_capacity_kwh": 88.5,
       "max_dc_power_kw": 150.0,
-      "arrival_minute": 1040,
+      "arrival_minute": 1060,
       "initial_soc": 0.38894374023858014
     },
     {
@@ -238,15 +214,23 @@
       "model_name": "Tesla Model Y",
       "battery_capacity_kwh": 75.0,
       "max_dc_power_kw": 250.0,
-      "arrival_minute": 1049,
+      "arrival_minute": 1071,
       "initial_soc": 0.3363661965925667
+    },
+    {
+      "session_id": "EV_06",
+      "model_name": "Togg T10X",
+      "battery_capacity_kwh": 88.5,
+      "max_dc_power_kw": 150.0,
+      "arrival_minute": 1077,
+      "initial_soc": 0.14720236084820615
     },
     {
       "session_id": "EV_45",
       "model_name": "Togg T10X",
       "battery_capacity_kwh": 88.5,
       "max_dc_power_kw": 150.0,
-      "arrival_minute": 1055,
+      "arrival_minute": 1079,
       "initial_soc": 0.27403882400121515
     },
     {
@@ -254,15 +238,23 @@
       "model_name": "Renault Megane",
       "battery_capacity_kwh": 60.0,
       "max_dc_power_kw": 130.0,
-      "arrival_minute": 1058,
+      "arrival_minute": 1083,
       "initial_soc": 0.40340781193408404
+    },
+    {
+      "session_id": "EV_46",
+      "model_name": "Porsche Taycan",
+      "battery_capacity_kwh": 93.4,
+      "max_dc_power_kw": 270.0,
+      "arrival_minute": 1098,
+      "initial_soc": 0.4566709065019656
     },
     {
       "session_id": "EV_39",
       "model_name": "Togg T10X",
       "battery_capacity_kwh": 88.5,
       "max_dc_power_kw": 150.0,
-      "arrival_minute": 1073,
+      "arrival_minute": 1101,
       "initial_soc": 0.32194098775659336
     },
     {
@@ -270,7 +262,7 @@
       "model_name": "Tesla Model Y",
       "battery_capacity_kwh": 75.0,
       "max_dc_power_kw": 250.0,
-      "arrival_minute": 1084,
+      "arrival_minute": 1115,
       "initial_soc": 0.4088049728443952
     },
     {
@@ -278,7 +270,7 @@
       "model_name": "BYD Atto 3",
       "battery_capacity_kwh": 60.4,
       "max_dc_power_kw": 88.0,
-      "arrival_minute": 1087,
+      "arrival_minute": 1118,
       "initial_soc": 0.21249351353560333
     },
     {
@@ -286,31 +278,31 @@
       "model_name": "Tesla Model Y RWD",
       "battery_capacity_kwh": 60.0,
       "max_dc_power_kw": 170.0,
-      "arrival_minute": 1093,
+      "arrival_minute": 1126,
       "initial_soc": 0.28939576042278153
-    },
-    {
-      "session_id": "EV_41",
-      "model_name": "MG4 Standard",
-      "battery_capacity_kwh": 51.0,
-      "max_dc_power_kw": 117.0,
-      "arrival_minute": 1093,
-      "initial_soc": 0.22685555712908614
     },
     {
       "session_id": "EV_47",
       "model_name": "BYD Atto 3",
       "battery_capacity_kwh": 60.4,
       "max_dc_power_kw": 88.0,
-      "arrival_minute": 1093,
+      "arrival_minute": 1126,
       "initial_soc": 0.45631699635141
+    },
+    {
+      "session_id": "EV_41",
+      "model_name": "MG4 Standard",
+      "battery_capacity_kwh": 51.0,
+      "max_dc_power_kw": 117.0,
+      "arrival_minute": 1127,
+      "initial_soc": 0.22685555712908614
     },
     {
       "session_id": "EV_38",
       "model_name": "Renault Megane",
       "battery_capacity_kwh": 60.0,
       "max_dc_power_kw": 130.0,
-      "arrival_minute": 1101,
+      "arrival_minute": 1137,
       "initial_soc": 0.19208559635795233
     },
     {
@@ -318,7 +310,7 @@
       "model_name": "Tesla Model Y RWD",
       "battery_capacity_kwh": 60.0,
       "max_dc_power_kw": 170.0,
-      "arrival_minute": 1104,
+      "arrival_minute": 1140,
       "initial_soc": 0.1609248410852674
     },
     {
@@ -326,7 +318,7 @@
       "model_name": "Renault Megane",
       "battery_capacity_kwh": 60.0,
       "max_dc_power_kw": 130.0,
-      "arrival_minute": 1105,
+      "arrival_minute": 1142,
       "initial_soc": 0.16584312703280726
     },
     {
@@ -334,7 +326,7 @@
       "model_name": "Tesla Model Y",
       "battery_capacity_kwh": 75.0,
       "max_dc_power_kw": 250.0,
-      "arrival_minute": 1111,
+      "arrival_minute": 1149,
       "initial_soc": 0.2326275989370209
     },
     {
@@ -342,7 +334,7 @@
       "model_name": "Tesla Model Y RWD",
       "battery_capacity_kwh": 60.0,
       "max_dc_power_kw": 170.0,
-      "arrival_minute": 1112,
+      "arrival_minute": 1150,
       "initial_soc": 0.14343029645417743
     },
     {
@@ -350,7 +342,7 @@
       "model_name": "Togg T10X",
       "battery_capacity_kwh": 88.5,
       "max_dc_power_kw": 150.0,
-      "arrival_minute": 1116,
+      "arrival_minute": 1156,
       "initial_soc": 0.14136118708902068
     },
     {
@@ -358,7 +350,7 @@
       "model_name": "BYD Atto 3",
       "battery_capacity_kwh": 60.4,
       "max_dc_power_kw": 88.0,
-      "arrival_minute": 1119,
+      "arrival_minute": 1158,
       "initial_soc": 0.24472504422135619
     },
     {
@@ -366,7 +358,7 @@
       "model_name": "BYD Atto 3",
       "battery_capacity_kwh": 60.4,
       "max_dc_power_kw": 88.0,
-      "arrival_minute": 1120,
+      "arrival_minute": 1160,
       "initial_soc": 0.13377772845595565
     },
     {
@@ -374,7 +366,7 @@
       "model_name": "BYD Atto 3",
       "battery_capacity_kwh": 60.4,
       "max_dc_power_kw": 88.0,
-      "arrival_minute": 1124,
+      "arrival_minute": 1165,
       "initial_soc": 0.2728372159100415
     },
     {
@@ -382,7 +374,7 @@
       "model_name": "Tesla Model Y RWD",
       "battery_capacity_kwh": 60.0,
       "max_dc_power_kw": 170.0,
-      "arrival_minute": 1132,
+      "arrival_minute": 1175,
       "initial_soc": 0.2023860362270411
     },
     {
@@ -390,15 +382,23 @@
       "model_name": "Tesla Model Y RWD",
       "battery_capacity_kwh": 60.0,
       "max_dc_power_kw": 170.0,
-      "arrival_minute": 1147,
+      "arrival_minute": 1194,
       "initial_soc": 0.23194448493311415
+    },
+    {
+      "session_id": "EV_19",
+      "model_name": "Tesla Model Y",
+      "battery_capacity_kwh": 75.0,
+      "max_dc_power_kw": 250.0,
+      "arrival_minute": 1201,
+      "initial_soc": 0.116645669544757
     },
     {
       "session_id": "EV_11",
       "model_name": "Tesla Model Y",
       "battery_capacity_kwh": 75.0,
       "max_dc_power_kw": 250.0,
-      "arrival_minute": 1208,
+      "arrival_minute": 1270,
       "initial_soc": 0.13855638486139973
     }
   ],
