@@ -19,6 +19,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
 from matplotlib.patches import Rectangle
+from matplotlib.gridspec import GridSpec
 
 # Set matplotlib to use Turkish locale if available
 plt.rcParams['font.sans-serif'] = ['DejaVu Sans', 'Arial', 'Liberation Sans']
@@ -229,19 +230,21 @@ class GridController(ABC):
     """Abstract edge controller for power allocation."""
 
     def __init__(self, stations: List[ChargingStation], grid_limit_kw: float,
-                 limit_policy: Optional['GridLimitPolicy'] = None):
+                 limit_policy: Optional['GridLimitPolicy'] = None,
+                 background_load: Optional[np.ndarray] = None):
         self.stations = stations
         self.queue = WaitingQueue()
         self.grid_limit_kw = grid_limit_kw
         self.limit_policy = limit_policy or GridLimitPolicy(base_limit_kw=grid_limit_kw)
+        self.background_load = background_load if background_load is not None else np.zeros(1440)
         self.power_log: List[float] = []
         self.grid_limit_log: List[float] = []
         self.completed_sessions: List[EV] = []
         self.queued_count: int = 0
 
     def get_baseline_at_minute(self, minute: int) -> float:
-        """Non-EV background load. Zero for a pure EV charging hub."""
-        return 0.0
+        """Non-EV background load from the pre-generated daily profile."""
+        return float(self.background_load[int(np.clip(minute, 0, 1439))])
 
     def get_grid_limit_at_minute(self, minute: int) -> float:
         """TOU dynamic limit: boost during peak arrival windows."""
@@ -493,6 +496,38 @@ class ArrivalGenerator:
         return self.EV_MODELS[idx]
 
 
+class BackgroundLoadGenerator:
+    """1440-dakikalık şebeke arka plan yük profili üretir.
+
+    Gerçekçi günlük tüketim modeli:
+      - Gece (00-06): düşük baz yük ~40-60 kW
+      - Sabah rampa + ofis tepe (09:00): +70 kW
+      - Öğleden sonra plato: ~130-160 kW
+      - Akşam konut tepe (19:00): +100 kW
+      - Rasgele gürültü: ±15 kW
+    """
+
+    @staticmethod
+    def generate(rng: np.random.Generator) -> np.ndarray:
+        hours = np.arange(1440) / 60.0
+
+        # Düzgün gündüz-gece eğrisi
+        base = 45.0 + 90.0 * np.clip(
+            0.5 * (1 - np.cos(np.pi * np.clip(hours - 6, 0, 14) / 14)), 0, 1
+        )
+
+        # Sabah ofis tepe ~09:00
+        morning_peak = 70.0 * np.exp(-0.5 * ((hours - 9.0) / 1.0) ** 2)
+
+        # Akşam konut tepe ~19:00
+        evening_peak = 100.0 * np.exp(-0.5 * ((hours - 19.0) / 1.2) ** 2)
+
+        noise = rng.normal(0.0, 15.0, 1440)
+
+        profile = base + morning_peak + evening_peak + noise
+        return np.clip(profile, 25.0, 280.0)
+
+
 class Simulation:
     """Run simulation with controller."""
 
@@ -562,271 +597,249 @@ class ExecutiveDashboard:
 
     @staticmethod
     def create_dashboard(result_unmanaged: SimulationResult, result_managed: SimulationResult) -> None:
-        """Create 6-panel executive dashboard in Turkish."""
-        fig = plt.figure(figsize=(16, 14))
-        fig.suptitle("EV Şarj Yük Dengeleme — Yönetici Özeti", fontsize=18, fontweight="bold", y=0.985)
+        """Create 7-panel executive dashboard in Turkish."""
+        fig = plt.figure(figsize=(16, 22))
+        fig.suptitle("EV Şarj Yük Dengeleme — Yönetici Özeti", fontsize=18, fontweight="bold", y=0.995)
 
-        # Panel 1: Grid Load (Filled Area)
-        ax1 = plt.subplot(3, 2, 1)
-        minutes = np.arange(1440)
-        hours = minutes / 60
+        gs = GridSpec(4, 2, figure=fig, hspace=0.52, wspace=0.35)
+        ax1 = fig.add_subplot(gs[0, 0])
+        ax2 = fig.add_subplot(gs[0, 1])
+        ax3 = fig.add_subplot(gs[1, 0])
+        ax4 = fig.add_subplot(gs[1, 1])
+        ax5 = fig.add_subplot(gs[2, 0])
+        ax6 = fig.add_subplot(gs[2, 1])
+        ax7 = fig.add_subplot(gs[3, :])   # Panel 7 tam genişlik
 
-        ax1.fill_between(hours, 0, result_unmanaged.power_timeseries, alpha=0.3, color="red", label="Kontrol Öncesi")
-        ax1.plot(hours, result_managed.power_timeseries, linewidth=2.5, color="darkgreen", label="Kontrol Sonrası")
-        # Dynamic TOU limit line
+        unmanaged_sessions = result_unmanaged.vehicle_sessions
+        managed_sessions   = result_managed.vehicle_sessions
+        hours = np.arange(1440) / 60
+
+        # ------------------------------------------------------------------
+        # Panel 1: Grid Load
+        # ------------------------------------------------------------------
+        ax1.fill_between(hours, 0, result_unmanaged.power_timeseries,
+                         alpha=0.3, color="red", label="Kontrol Öncesi")
+        ax1.plot(hours, result_managed.power_timeseries,
+                 linewidth=2.5, color="darkgreen", label="Kontrol Sonrası")
         limit_series = result_managed.grid_limit_timeseries
         if len(limit_series) == 1440:
-            ax1.plot(hours, limit_series, color="red", linestyle="--", linewidth=2.5,
-                     label=f"Dinamik Şebeke Limiti ({int(limit_series.min())}-{int(limit_series.max())} kW)")
+            ax1.plot(hours, limit_series, color="red", linestyle="--", linewidth=2.0,
+                     label=f"Dinamik Limit ({int(limit_series.min())}-{int(limit_series.max())} kW)")
             for sh, eh in [(7, 10), (17, 20)]:
                 ax1.axvspan(sh, eh, alpha=0.08, color="orange",
                             label="TOU Pik Penceresi" if sh == 7 else "")
         else:
-            ax1.axhline(400, color="red", linestyle="--", linewidth=2.5, label="Şebeke Limiti (400 kW)")
-        ax1.set_xlabel("Gün Saati (saat)", fontsize=11)
-        ax1.set_ylabel("Şebeke Yükü (kW)", fontsize=11)
-        ax1.set_title("Panel 1: 24 Saatlik Şebeke Yükü Profili", fontsize=12, fontweight="bold")
+            ax1.axhline(400, color="red", linestyle="--", linewidth=2.0, label="Şebeke Limiti (400 kW)")
+        ax1.set_xlabel("Gün Saati (saat)", fontsize=10)
+        ax1.set_ylabel("Şebeke Yükü (kW)", fontsize=10)
+        ax1.set_title("Panel 1: 24 Saatlik Şebeke Yükü Profili", fontsize=11, fontweight="bold")
         ax1.set_xlim(0, 24)
         ax1.set_xticks(range(0, 25, 2))
-        ax1.legend(loc="upper right", fontsize=10)
+        ax1.legend(loc="upper right", fontsize=9)
         ax1.grid(True, alpha=0.3)
 
-        # Panel 2: Wait Time Categories (Managed)
-        ax2 = plt.subplot(3, 2, 2)
-
-        managed_sessions = result_managed.vehicle_sessions
-        no_wait = sum(1 for s in managed_sessions if s.wait_time_minutes == 0)
+        # ------------------------------------------------------------------
+        # Panel 2: Wait Time Categories
+        # ------------------------------------------------------------------
+        no_wait    = sum(1 for s in managed_sessions if s.wait_time_minutes == 0)
         short_wait = sum(1 for s in managed_sessions if 0 < s.wait_time_minutes <= 15)
-        long_wait = sum(1 for s in managed_sessions if s.wait_time_minutes > 15)
+        long_wait  = sum(1 for s in managed_sessions if s.wait_time_minutes > 15)
 
         categories = ["Bekleme Yok\n(0 dk)", "Kabul Edilebilir\n(1-15 dk)", "Uzun Bekleme\n(15+ dk)"]
-        values = [no_wait, short_wait, long_wait]
+        values     = [no_wait, short_wait, long_wait]
         colors_cat = ["#2ecc71", "#f39c12", "#e74c3c"]
 
         bars = ax2.bar(categories, values, color=colors_cat, edgecolor="black", linewidth=1.5, width=0.6)
-        ax2.set_ylabel("Araç Sayısı", fontsize=11)
-        ax2.set_title("Panel 2: Kuyruk Bekleme Dağılımı (Kontrol Sonrası)", fontsize=12, fontweight="bold")
-        ax2.set_ylim(0, max(values) * 1.15)
-
+        ax2.set_ylabel("Araç Sayısı", fontsize=10)
+        ax2.set_title("Panel 2: Kuyruk Bekleme Dağılımı (Kontrol Sonrası)", fontsize=11, fontweight="bold")
+        ax2.set_ylim(0, max(values) * 1.2 if max(values) > 0 else 1)
         for bar, val in zip(bars, values):
-            height = bar.get_height()
-            ax2.text(bar.get_x() + bar.get_width() / 2, height + 0.5,
-                    f"{int(val)}", ha="center", va="bottom", fontsize=10, fontweight="bold")
-
+            ax2.text(bar.get_x() + bar.get_width() / 2, bar.get_height() + 0.3,
+                     f"{int(val)}", ha="center", va="bottom", fontsize=10, fontweight="bold")
         ax2.grid(True, alpha=0.3, axis="y")
 
-        # Panel 3: Model Comparison - CHARGE TIME (Unmanaged vs Managed)
-        ax3 = plt.subplot(3, 2, 3)
+        # ------------------------------------------------------------------
+        # Panel 3: Charge Time by Model
+        # ------------------------------------------------------------------
+        model_charge_um: Dict[str, list] = {}
+        model_charge_mg: Dict[str, list] = {}
+        for s in unmanaged_sessions:
+            model_charge_um.setdefault(s.model_name, []).append(s.charge_time_minutes)
+        for s in managed_sessions:
+            model_charge_mg.setdefault(s.model_name, []).append(s.charge_time_minutes)
 
-        unmanaged_sessions = result_unmanaged.vehicle_sessions
-        managed_sessions = result_managed.vehicle_sessions
+        models3 = sorted(set(list(model_charge_um) + list(model_charge_mg)))
+        avg_um3  = [np.mean(model_charge_um.get(m, [0])) for m in models3]
+        avg_mg3  = [np.mean(model_charge_mg.get(m, [0])) for m in models3]
+        labels3  = [f"{m}\n(n={len(model_charge_um.get(m,[]))})" for m in models3]
+        x3 = np.arange(len(models3)); w3 = 0.35
 
-        # Group by model for charge times
-        model_charge_um = {}
-        model_charge_mg = {}
-
-        for session in unmanaged_sessions:
-            model = session.model_name
-            if model not in model_charge_um:
-                model_charge_um[model] = []
-            model_charge_um[model].append(session.charge_time_minutes)
-
-        for session in managed_sessions:
-            model = session.model_name
-            if model not in model_charge_mg:
-                model_charge_mg[model] = []
-            model_charge_mg[model].append(session.charge_time_minutes)
-
-        models = sorted(set(list(model_charge_um.keys()) + list(model_charge_mg.keys())))
-        avg_um = [np.mean(model_charge_um.get(m, [0])) for m in models]
-        avg_mg = [np.mean(model_charge_mg.get(m, [0])) for m in models]
-
-        # Create labels with model names and counts
-        model_labels = []
-        for m in models:
-            count = len(model_charge_um.get(m, []))
-            model_labels.append(f"{m}\n(n={count})")
-
-        x_pos = np.arange(len(models))
-        width = 0.35
-
-        bars1 = ax3.bar(x_pos - width/2, avg_um, width, label="Kontrol Öncesi", color="lightcoral", edgecolor="black")
-        bars2 = ax3.bar(x_pos + width/2, avg_mg, width, label="Kontrol Sonrası", color="lightgreen", edgecolor="black")
-
-        ax3.set_ylabel("Ortalama Şarj Süresi (dakika)", fontsize=11)
-        ax3.set_xlabel("Araç Modeli (n=araç sayısı)", fontsize=11)
-        ax3.set_title("Panel 3: Şarj Süresi Kıyası (Öncesi vs Sonrası)", fontsize=12, fontweight="bold")
-        ax3.set_xticks(x_pos)
-        ax3.set_xticklabels(model_labels, fontsize=9, rotation=45, ha="right")
-        ax3.legend(fontsize=10)
+        b3a = ax3.bar(x3 - w3/2, avg_um3, w3, label="Kontrol Öncesi", color="lightcoral", edgecolor="black")
+        b3b = ax3.bar(x3 + w3/2, avg_mg3, w3, label="Kontrol Sonrası", color="lightgreen", edgecolor="black")
+        ax3.set_ylabel("Ort. Şarj Süresi (dk)", fontsize=10)
+        ax3.set_title("Panel 3: Şarj Süresi Kıyası", fontsize=11, fontweight="bold")
+        ax3.set_xticks(x3)
+        ax3.set_xticklabels(labels3, fontsize=8, rotation=30, ha="right")
+        ax3.legend(fontsize=9)
         ax3.grid(True, alpha=0.3, axis="y")
+        for b in [b3a, b3b]:
+            for bar in b:
+                h = bar.get_height()
+                if h > 0.5:
+                    ax3.text(bar.get_x() + bar.get_width() / 2, h + 0.4,
+                             f"{h:.0f}", ha="center", va="bottom", fontsize=7)
 
-        # Add value labels
-        for bars in [bars1, bars2]:
-            for bar in bars:
-                height = bar.get_height()
-                if height > 0:
-                    ax3.text(bar.get_x() + bar.get_width() / 2, height + 1,
-                            f"{height:.0f}", ha="center", va="bottom", fontsize=8)
+        # ------------------------------------------------------------------
+        # Panel 4: Wait Time by Model  (DÜZELTILDI)
+        # ------------------------------------------------------------------
+        model_wait_um: Dict[str, list] = {}
+        model_wait_mg: Dict[str, list] = {}
+        for s in unmanaged_sessions:
+            model_wait_um.setdefault(s.model_name, []).append(s.wait_time_minutes)
+        for s in managed_sessions:
+            model_wait_mg.setdefault(s.model_name, []).append(s.wait_time_minutes)
 
-        # Panel 4: Model Comparison - WAIT TIME (Unmanaged vs Managed)
-        ax4 = plt.subplot(3, 2, 4)
+        models4    = sorted(set(list(model_wait_um) + list(model_wait_mg)))
+        avg_wait_um = [np.mean(model_wait_um.get(m, [0])) for m in models4]
+        avg_wait_mg = [np.mean(model_wait_mg.get(m, [0])) for m in models4]
+        labels4    = [f"{m.split()[0]}\n(n={len(model_wait_um.get(m,[]))})" for m in models4]
+        x4 = np.arange(len(models4)); w4 = 0.35
 
-        # Group by model for wait times
-        model_wait_um = {}
-        model_wait_mg = {}
-
-        for session in unmanaged_sessions:
-            model = session.model_name
-            if model not in model_wait_um:
-                model_wait_um[model] = []
-            model_wait_um[model].append(session.wait_time_minutes)
-
-        for session in managed_sessions:
-            model = session.model_name
-            if model not in model_wait_mg:
-                model_wait_mg[model] = []
-            model_wait_mg[model].append(session.wait_time_minutes)
-
-        models = sorted(set(list(model_wait_um.keys()) + list(model_wait_mg.keys())))
-        avg_wait_um = [np.mean(model_wait_um.get(m, [0])) for m in models]
-        avg_wait_mg = [np.mean(model_wait_mg.get(m, [0])) for m in models]
-
-        # Create labels with model names and counts
-        model_labels = []
-        for m in models:
-            count = len(model_wait_um.get(m, []))
-            model_labels.append(f"{m}\n(n={count})")
-
-        x_pos = np.arange(len(models))
-        width = 0.35
-
-        bars1 = ax4.bar(x_pos - width/2, avg_wait_um, width, label="Kontrol Öncesi", color="lightyellow", edgecolor="black")
-        bars2 = ax4.bar(x_pos + width/2, avg_wait_mg, width, label="Kontrol Sonrası", color="lightblue", edgecolor="black")
-
-        ax4.set_ylabel("Ortalama Bekleme Süresi (dakika)", fontsize=11)
-        ax4.set_xlabel("Araç Modeli (n=araç sayısı)", fontsize=11)
-        ax4.set_title("Panel 4: Bekleme Süresi Kıyası (Öncesi vs Sonrası)", fontsize=12, fontweight="bold")
-        ax4.set_xticks(x_pos)
-        ax4.set_xticklabels(model_labels, fontsize=9, rotation=45, ha="right")
-        ax4.legend(fontsize=10)
+        b4a = ax4.bar(x4 - w4/2, avg_wait_um, w4, label="Kontrol Öncesi",
+                      color="#f9c784", edgecolor="black")
+        b4b = ax4.bar(x4 + w4/2, avg_wait_mg, w4, label="Kontrol Sonrası",
+                      color="#74b9ff", edgecolor="black")
+        ax4.set_ylabel("Ort. Bekleme Süresi (dk)", fontsize=10)
+        ax4.set_title("Panel 4: Bekleme Süresi Kıyası", fontsize=11, fontweight="bold")
+        ax4.set_xticks(x4)
+        ax4.set_xticklabels(labels4, fontsize=9)
+        ax4.legend(fontsize=9)
         ax4.grid(True, alpha=0.3, axis="y")
+        y4_max = max(max(avg_wait_um, default=0), max(avg_wait_mg, default=0))
+        ax4.set_ylim(0, max(y4_max * 1.35, 1.0))
+        offset4 = max(y4_max * 0.04, 0.08)
+        for b in [b4a, b4b]:
+            for bar in b:
+                h = bar.get_height()
+                if h >= 0.05:
+                    ax4.text(bar.get_x() + bar.get_width() / 2, h + offset4,
+                             f"{h:.1f}", ha="center", va="bottom", fontsize=8, fontweight="bold")
 
-        # Add value labels
-        for bars in [bars1, bars2]:
-            for bar in bars:
-                height = bar.get_height()
-                if height > 0:
-                    ax4.text(bar.get_x() + bar.get_width() / 2, height + 1,
-                            f"{height:.0f}", ha="center", va="bottom", fontsize=8)
-
+        # ------------------------------------------------------------------
         # Panel 5: Metrics Summary (Text)
-        ax5 = plt.subplot(3, 2, 5)
+        # ------------------------------------------------------------------
         ax5.axis("off")
+        peak_red_pct = ((result_unmanaged.metrics_summary.peak_power_kw -
+                         result_managed.metrics_summary.peak_power_kw) /
+                        result_unmanaged.metrics_summary.peak_power_kw * 100)
+        overload_red_pct = ((result_unmanaged.metrics_summary.overload_minutes -
+                             result_managed.metrics_summary.overload_minutes) /
+                            max(result_unmanaged.metrics_summary.overload_minutes, 1) * 100)
+        kwh_diff     = result_unmanaged.metrics_summary.total_overload_kwh - result_managed.metrics_summary.total_overload_kwh
+        delay_inc    = result_managed.metrics_summary.avg_delay_minutes - result_unmanaged.metrics_summary.avg_delay_minutes
 
-        peak_reduction_pct = ((result_unmanaged.metrics_summary.peak_power_kw - result_managed.metrics_summary.peak_power_kw)
-                             / result_unmanaged.metrics_summary.peak_power_kw * 100)
-        overload_reduction_pct = ((result_unmanaged.metrics_summary.overload_minutes - result_managed.metrics_summary.overload_minutes)
-                                 / max(result_unmanaged.metrics_summary.overload_minutes, 1) * 100)
-
-        # Calculate additional metrics
-        total_overload_kwh_diff = result_unmanaged.metrics_summary.total_overload_kwh - result_managed.metrics_summary.total_overload_kwh
-        avg_delay_um = result_unmanaged.metrics_summary.avg_delay_minutes
-        avg_delay_mg = result_managed.metrics_summary.avg_delay_minutes
-        delay_increase = avg_delay_mg - avg_delay_um
-
-        summary_text = f"""
-ŞEBEKE KORUMASI & PERFORMANS ANALİZİ
-
-ŞEBEKE KORUMASI:
-  Korunan Kapasite: {result_managed.metrics_summary.protected_capacity_percent:.1f}% ✓
-  Pik Güç: {result_unmanaged.metrics_summary.peak_power_kw:.0f}→{result_managed.metrics_summary.peak_power_kw:.0f}kW (↓{peak_reduction_pct:.1f}%)
-  Aşım: {result_unmanaged.metrics_summary.overload_minutes}→{result_managed.metrics_summary.overload_minutes}dk (↓{overload_reduction_pct:.1f}%)
-  Aşım Enerjisi: ↓ {total_overload_kwh_diff:.1f} kWh
-
-HİZMET KALİTESİ:
-  Servis Verilen: {result_managed.metrics_summary.evs_completed} araç (100%)
-  Ort. Bekleme: {result_unmanaged.metrics_summary.avg_delay_minutes:.1f}→{result_managed.metrics_summary.avg_delay_minutes:.1f}dk (+{delay_increase:.1f}dk)
-
-ALGORİTMA:
-  Tür: SPT Dispatch + SREF + TOU Dinamik Limit
-  Baz Limit: {result_managed.metrics_summary.avg_grid_limit_kw:.0f} kW (ort.)
-  Pik Limit: {result_managed.grid_limit_timeseries.max():.0f} kW (07-10 & 17-20)
-  Pik Boost Süresi: {result_managed.metrics_summary.peak_boost_minutes} dk
-"""
-
+        summary_text = (
+            f"ŞEBEKE KORUMASI & PERFORMANS\n\n"
+            f"Korunan Kapasite : {result_managed.metrics_summary.protected_capacity_percent:.1f}%\n"
+            f"Pik Güç          : {result_unmanaged.metrics_summary.peak_power_kw:.0f} → "
+            f"{result_managed.metrics_summary.peak_power_kw:.0f} kW  (↓{peak_red_pct:.1f}%)\n"
+            f"Aşım Süresi      : {result_unmanaged.metrics_summary.overload_minutes} → "
+            f"{result_managed.metrics_summary.overload_minutes} dk  (↓{overload_red_pct:.1f}%)\n"
+            f"Aşım Enerjisi    : ↓ {kwh_diff:.1f} kWh\n\n"
+            f"Servis Verilen   : {result_managed.metrics_summary.evs_completed} araç\n"
+            f"Ort. Bekleme     : {result_unmanaged.metrics_summary.avg_delay_minutes:.1f} → "
+            f"{result_managed.metrics_summary.avg_delay_minutes:.1f} dk  (+{delay_inc:.1f} dk)\n\n"
+            f"Algoritma        : Dinamik Priority + TOU\n"
+            f"Baz Limit        : {result_managed.metrics_summary.avg_grid_limit_kw:.0f} kW (ort.)\n"
+            f"Pik Boost        : {result_managed.grid_limit_timeseries.max():.0f} kW\n"
+            f"Boost Süresi     : {result_managed.metrics_summary.peak_boost_minutes} dk"
+        )
         ax5.text(0.05, 0.95, summary_text, transform=ax5.transAxes,
-                fontsize=10, verticalalignment="top", fontfamily="monospace",
-                bbox=dict(boxstyle="round", facecolor="lightgreen", alpha=0.4))
+                 fontsize=9.5, verticalalignment="top", fontfamily="monospace",
+                 bbox=dict(boxstyle="round", facecolor="lightgreen", alpha=0.4))
 
-        # Panel 6: Total System Time (Wait + Charge) by Model
-        ax6 = plt.subplot(3, 2, 6)
+        # ------------------------------------------------------------------
+        # Panel 6: Total System Time
+        # ------------------------------------------------------------------
+        model_sys_um: Dict[str, list] = {}
+        model_sys_mg: Dict[str, list] = {}
+        for s in unmanaged_sessions:
+            model_sys_um.setdefault(s.model_name.split()[0], []).append(
+                s.wait_time_minutes + s.charge_time_minutes)
+        for s in managed_sessions:
+            model_sys_mg.setdefault(s.model_name.split()[0], []).append(
+                s.wait_time_minutes + s.charge_time_minutes)
 
-        unmanaged_sessions = result_unmanaged.vehicle_sessions
-        managed_sessions = result_managed.vehicle_sessions
+        models6 = sorted(set(list(model_sys_um) + list(model_sys_mg)))
+        avg6_um = [np.mean(model_sys_um.get(m, [0])) for m in models6]
+        avg6_mg = [np.mean(model_sys_mg.get(m, [0])) for m in models6]
+        labels6 = [f"{m}\n(n={len(model_sys_mg.get(m,[]))})" for m in models6]
+        x6 = np.arange(len(models6)); w6 = 0.35
 
-        model_sessions_um = {}
-        model_sessions_mg = {}
-
-        for session in unmanaged_sessions:
-            model = session.model_name.split()[0]
-            if model not in model_sessions_um:
-                model_sessions_um[model] = []
-            model_sessions_um[model].append(session)
-
-        for session in managed_sessions:
-            model = session.model_name.split()[0]
-            if model not in model_sessions_mg:
-                model_sessions_mg[model] = []
-            model_sessions_mg[model].append(session)
-
-        all_models = sorted(set(list(model_sessions_um.keys()) + list(model_sessions_mg.keys())))
-
-        avg_system_time_um = []
-        avg_system_time_mg = []
-        model_labels_short = []
-
-        for model in all_models:
-            um_sessions = model_sessions_um.get(model, [])
-            mg_sessions = model_sessions_mg.get(model, [])
-
-            if um_sessions:
-                um_total = [s.wait_time_minutes + s.charge_time_minutes for s in um_sessions]
-                avg_system_time_um.append(np.mean(um_total))
-            else:
-                avg_system_time_um.append(0)
-
-            if mg_sessions:
-                mg_total = [s.wait_time_minutes + s.charge_time_minutes for s in mg_sessions]
-                avg_system_time_mg.append(np.mean(mg_total))
-            else:
-                avg_system_time_mg.append(0)
-
-            model_labels_short.append(f"{model}\n(n={len(mg_sessions) if mg_sessions else 0})")
-
-        x_pos = np.arange(len(model_labels_short))
-        width = 0.35
-
-        bars1 = ax6.bar(x_pos - width/2, avg_system_time_um, width, label="Kontrol Öncesi", color="lightcoral", edgecolor="black")
-        bars2 = ax6.bar(x_pos + width/2, avg_system_time_mg, width, label="Kontrol Sonrası", color="lightgreen", edgecolor="black")
-
-        ax6.set_ylabel("Ortalama Sistem Süresi (dakika)", fontsize=11)
-        ax6.set_xlabel("Araç Modeli (n=araç sayısı)", fontsize=11)
-        ax6.set_title("Panel 6: Toplam Sistemde Kalma Süresi (Bekleme + Şarj)", fontsize=12, fontweight="bold")
-        ax6.set_xticks(x_pos)
-        ax6.set_xticklabels(model_labels_short, fontsize=9)
-        ax6.legend(fontsize=10)
+        b6a = ax6.bar(x6 - w6/2, avg6_um, w6, label="Kontrol Öncesi", color="lightcoral", edgecolor="black")
+        b6b = ax6.bar(x6 + w6/2, avg6_mg, w6, label="Kontrol Sonrası", color="lightgreen", edgecolor="black")
+        ax6.set_ylabel("Ort. Sistem Süresi (dk)", fontsize=10)
+        ax6.set_title("Panel 6: Toplam Sistemde Kalma (Bekleme + Şarj)", fontsize=11, fontweight="bold")
+        ax6.set_xticks(x6)
+        ax6.set_xticklabels(labels6, fontsize=9)
+        ax6.legend(fontsize=9)
         ax6.grid(True, alpha=0.3, axis="y")
+        for b in [b6a, b6b]:
+            for bar in b:
+                h = bar.get_height()
+                if h > 0.5:
+                    ax6.text(bar.get_x() + bar.get_width() / 2, h + 0.5,
+                             f"{h:.0f}", ha="center", va="bottom", fontsize=8)
 
-        # Add value labels
-        for bars in [bars1, bars2]:
-            for bar in bars:
-                height = bar.get_height()
-                if height > 0:
-                    ax6.text(bar.get_x() + bar.get_width() / 2, height + 1,
-                            f"{height:.0f}", ha="center", va="bottom", fontsize=8)
+        # ------------------------------------------------------------------
+        # Panel 7: Şarj Süresi Uzatım Aralığı (Min / Ort. / Maks)
+        # ------------------------------------------------------------------
+        model_ext: Dict[str, list] = {}
+        for s_um, s_mg in zip(
+            sorted(unmanaged_sessions, key=lambda s: s.session_id),
+            sorted(managed_sessions,   key=lambda s: s.session_id),
+        ):
+            key = s_mg.model_name.split()[0]
+            model_ext.setdefault(key, []).append(s_mg.charge_time_minutes - s_um.charge_time_minutes)
 
-        plt.tight_layout()
+        ext_models = sorted(model_ext.keys())
+        ext_min  = [min(model_ext[m])  for m in ext_models]
+        ext_avg  = [np.mean(model_ext[m]) for m in ext_models]
+        ext_max  = [max(model_ext[m])  for m in ext_models]
+        ext_labels = [
+            f"{m}\n(n={len(model_ext[m])})" for m in ext_models
+        ]
+
+        x7 = np.arange(len(ext_models))
+        # Arka plan: min'den max'a uzanan gri bant
+        for i, (mn, mx) in enumerate(zip(ext_min, ext_max)):
+            ax7.bar(i, mx - mn, bottom=mn, width=0.45,
+                    color="steelblue", alpha=0.25, edgecolor="none")
+        # Ortalama çizgisi
+        ax7.plot(x7, ext_avg, "o-", color="navy", linewidth=2, markersize=7,
+                 label="Ortalama Artış", zorder=3)
+        # Min / Max işaret
+        ax7.scatter(x7, ext_min, marker="^", color="green",  s=60, zorder=4, label="En Az Artış")
+        ax7.scatter(x7, ext_max, marker="v", color="crimson", s=60, zorder=4, label="En Çok Artış")
+
+        # Değer etiketleri
+        for i, (mn, av, mx) in enumerate(zip(ext_min, ext_avg, ext_max)):
+            ax7.text(i - 0.25, mn - 0.6,  f"{mn:+.0f}", fontsize=8, color="green",   ha="center")
+            ax7.text(i,        av + 0.5,   f"{av:+.1f}", fontsize=8, color="navy",    ha="center", fontweight="bold")
+            ax7.text(i + 0.25, mx + 0.5,   f"{mx:+.0f}", fontsize=8, color="crimson", ha="center")
+
+        ax7.axhline(0, color="black", linewidth=1.2, linestyle="--", alpha=0.5)
+        ax7.set_xticks(x7)
+        ax7.set_xticklabels(ext_labels, fontsize=10)
+        ax7.set_ylabel("Şarj Süresi Değişimi (dakika)", fontsize=11)
+        ax7.set_title(
+            "Panel 7: Algoritmanın Model Başına Şarj Süresi Uzatım Aralığı "
+            "(yeşil▲ = en az, mavi● = ortalama, kırmızı▼ = en çok)",
+            fontsize=11, fontweight="bold",
+        )
+        ax7.legend(fontsize=9, loc="upper right")
+        ax7.grid(True, alpha=0.3, axis="y")
+
         plt.savefig("F:/LoadBalancing/executive_dashboard_tr.png", dpi=150, bbox_inches="tight")
         print("✓ Türkçe yönetici dashboard kaydedildi: executive_dashboard_tr.png")
         plt.show()
@@ -954,6 +967,8 @@ def main(generate_new: bool = False):
 
     # Dataset management
     dataset_file = "F:/LoadBalancing/dataset.json"
+    rng_bg = np.random.default_rng(seed=99)  # separate RNG for background load
+
     if not generate_new and __import__('os').path.exists(dataset_file):
         with open(dataset_file, 'r') as f:
             data = json.load(f)
@@ -974,11 +989,22 @@ def main(generate_new: bool = False):
                 )
             )
         arrival_schedule = arrival_schedule_dict
+
+        if 'background_load_profile' in data:
+            background_load = np.array(data['background_load_profile'])
+            print(f"✓ Arka plan yük profili yüklendi (ort. {background_load.mean():.0f} kW, maks. {background_load.max():.0f} kW)")
+        else:
+            background_load = BackgroundLoadGenerator.generate(rng_bg)
+            data['background_load_profile'] = background_load.tolist()
+            with open(dataset_file, 'w') as f:
+                json.dump(data, f, indent=2)
+            print(f"✓ Arka plan yük profili oluşturuldu ve kaydedildi")
     else:
         print("✓ Yeni veri seti oluşturuluyor...")
         rng = np.random.default_rng(seed=42)
         gen = ArrivalGenerator(50)
         arrival_schedule = gen.generate_arrivals(rng)
+        background_load = BackgroundLoadGenerator.generate(rng_bg)
 
         # Save dataset
         vehicles_data = []
@@ -993,8 +1019,12 @@ def main(generate_new: bool = False):
                     "initial_soc": ev.initial_soc,
                 })
         with open(dataset_file, 'w') as f:
-            json.dump({"timestamp": datetime.now().isoformat(), "vehicles": vehicles_data}, f, indent=2)
-        print(f"✓ Veri seti kaydedildi: {len(vehicles_data)} araç")
+            json.dump({
+                "timestamp": datetime.now().isoformat(),
+                "vehicles": vehicles_data,
+                "background_load_profile": background_load.tolist(),
+            }, f, indent=2)
+        print(f"✓ Veri seti kaydedildi: {len(vehicles_data)} araç, arka plan yük profili dahil")
 
     # Stations: Tüm istasyonlar aynı capacity → soket assignment fair
     # (aksi halde, scenario A/B'de farklı istasyonlara giden araçlar farklı güç alır)
@@ -1046,7 +1076,7 @@ def main(generate_new: bool = False):
     else:
         print("✓ Schedule kontrol: A ve B özdeş araçlar")
 
-    controller_a = UnmanagedController(stations_a, 400.0)
+    controller_a = UnmanagedController(stations_a, 400.0, background_load=background_load)
     result_a = Simulation(controller_a, schedule_a).run()
     print(f"   ✓ Tamamlandı: Pik={result_a.metrics_summary.peak_power_kw:.0f}kW, Aşım={result_a.metrics_summary.overload_minutes}dk")
 
@@ -1059,7 +1089,7 @@ def main(generate_new: bool = False):
         evening_peak_start=1020,  # 17:00
         evening_peak_end=1200,    # 20:00
     )
-    controller_b = ManagedController(stations_b, 400.0, limit_policy=tou_policy)
+    controller_b = ManagedController(stations_b, 400.0, limit_policy=tou_policy, background_load=background_load)
     result_b = Simulation(controller_b, schedule_b).run()
     print(f"   ✓ Tamamlandı: Pik={result_b.metrics_summary.peak_power_kw:.0f}kW, Aşım={result_b.metrics_summary.overload_minutes}dk")
 
