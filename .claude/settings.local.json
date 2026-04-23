@@ -3,7 +3,8 @@
     "allow": [
       "Bash(python simulation.py)",
       "Bash(python3)",
-      "Bash(python simulation_v3.py)"
+      "Bash(python simulation_v3.py)",
+      "Bash(python3 -c ' *)"
     ]
   }
 }
