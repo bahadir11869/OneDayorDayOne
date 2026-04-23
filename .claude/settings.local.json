@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python simulation.py)",
+      "Bash(python3)",
+      "Bash(python simulation_v3.py)"
+    ]
+  }
+}
