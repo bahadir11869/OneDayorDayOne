@@ -30,7 +30,7 @@ def build_station_matrix(timeline_log):
     return list(rows.values())
 
 
-def export_comparative_excel(ctrl_u, ctrl_m, fn: str = "ev_sarj_karsilastirma_raporu.xlsx"):
+def export_comparative_excel(ctrl_u, ctrl_m, fn: str = "../OutputExcel/ev_sarj_karsilastirma_raporu.xlsx"):
     """İki kontrolcünün karşılaştırmasını Excel'e yazdırır."""
     ud = {e.session_id: e for e in ctrl_u.completed}
     
@@ -67,7 +67,7 @@ def export_comparative_excel(ctrl_u, ctrl_m, fn: str = "ev_sarj_karsilastirma_ra
         print(f"Excel aktarımı başarısız: {e}")
 
 
-def export_multi_controller_excel(all_controllers: list, fn: str = "ev_coklu_kontrolcu_raporu.xlsx"):
+def export_multi_controller_excel(all_controllers: list, fn: str = "../OutputExcel/ev_coklu_kontrolcu_raporu.xlsx"):
     """Tüm kontrolcülerin metriklerini ve istasyon loglarını tek Excel dosyasına yazar."""
     metrics_data = []
     for name, ctrl in all_controllers:
@@ -189,4 +189,4 @@ class ExecutiveDashboard:
 
         plt.savefig(filename, dpi=150, bbox_inches="tight")
         print(f"✓ Grafik: {filename}")
-        plt.show()
+        plt.show(block=False)  # Grafiği ekranda açar ama kodun akışını durdurmaz

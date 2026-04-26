@@ -12,6 +12,5 @@
 *.md
 *.pdf
 *.py
-!simulation_v3.py
-!src/paket/*.py
+!src/*.py
 .rooignore

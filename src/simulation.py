@@ -49,7 +49,7 @@ def main(generate_new: bool = False, config: Optional[ScenarioConfig] = None):
     if config is None:
         config = Scenarios.avm_medium()
     print(f"EV Yük Dengeleme Simülasyonu başlatılıyor... Senaryo: {config.name}")
-    dataset_file = "dataset.json"
+    dataset_file = "../DATASET/dataset.json"
     policy = config.to_grid_limit_policy()
 
     if not generate_new:
@@ -123,10 +123,13 @@ def main(generate_new: bool = False, config: Optional[ScenarioConfig] = None):
         avc = np.mean([e.charge_minutes   for e in c]) if c else 0.0
         print(f"{name:<20} {len(c):>6} {p.max():>12.1f} {int(over.sum()):>8} {float(np.where(over,p-l,0).sum()/60):>9.2f} {avw:>11.1f} {avc:>12.1f}")
 
-    ExecutiveDashboard.create(res_a, res_b, ctrl_label="Yönetimli",    filename="dashboard_yonetimli.png",    bg_load=bg_load)
-    ExecutiveDashboard.create(res_a, res_c, ctrl_label="SRPT",         filename="dashboard_srpt.png",         bg_load=bg_load)
-    ExecutiveDashboard.create(res_a, res_d, ctrl_label="Su Doldurma",  filename="dashboard_su_doldurma.png",  bg_load=bg_load)
-    ExecutiveDashboard.create(res_a, res_e, ctrl_label="Dinamik Adil", filename="dashboard_dinamik_adil.png", bg_load=bg_load)
+    ExecutiveDashboard.create(res_a, res_b, ctrl_label="Yönetimli",    filename="../OutputPNG/dashboard_yonetimli.png",    bg_load=bg_load)
+    ExecutiveDashboard.create(res_a, res_c, ctrl_label="SRPT",         filename="../OutputPNG/dashboard_srpt.png",         bg_load=bg_load)
+    ExecutiveDashboard.create(res_a, res_d, ctrl_label="Su Doldurma",  filename="../OutputPNG/dashboard_su_doldurma.png",  bg_load=bg_load)
+    ExecutiveDashboard.create(res_a, res_e, ctrl_label="Dinamik Adil", filename="../OutputPNG/dashboard_dinamik_adil.png", bg_load=bg_load)
+
+    # Tüm pencerelerin ekranda aynı anda kalması için programı en sonda beklet:
+    plt.show()
 
 
 if __name__ == "__main__":
