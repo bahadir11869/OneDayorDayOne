@@ -6,7 +6,7 @@ from typing import Dict, List, Optional
 import copy
 import numpy as np
 
-from .models import (
+from models import (
     ChargingStation, GridLimitPolicy, EV, EVState, EVModel,
     SimulationResult, VehicleSession, MetricsSummary
 )

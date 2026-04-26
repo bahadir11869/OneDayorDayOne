@@ -20,25 +20,23 @@ from typing import Dict, List, Optional
 # Script klasör içinden doğrudan çalıştırıldığında import hatalarını önlemek için:
 if __name__ == "__main__" and __package__ is None:
     sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-    __package__ = "paket"
-    import paket
 
-from .models import (
+from models import (
     EVState, StationType, EVModel, GridLimitPolicy, MetricsSummary,
     VehicleSession, SimulationResult, EV, ChargingStation, EnvironmentProfile,
     GridConfig, ArrivalPattern, FleetProfile, StationLayout, ScenarioConfig
 )
 
-from .generators import (
+from generators import (
     ArrivalGenerator, BackgroundLoadGenerator, Scenarios
 )
 
-from .controllers import (
+from controllers import (
     UnmanagedController, ManagedController, SRPTController,
     WaterFillingController, DynamicFairController, Simulation as Sim
 )
 
-from .export import (
+from export import (
     build_station_matrix, export_comparative_excel, export_multi_controller_excel,
     ExecutiveDashboard
 )

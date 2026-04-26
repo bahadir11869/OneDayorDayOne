@@ -8,7 +8,7 @@ import pandas as pd
 import matplotlib.pyplot as plt
 from matplotlib.gridspec import GridSpec
 
-from .models import SimulationResult, MetricsSummary, VehicleSession
+from models import SimulationResult, MetricsSummary, VehicleSession
 
 
 def build_station_matrix(timeline_log):

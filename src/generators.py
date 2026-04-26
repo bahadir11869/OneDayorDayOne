@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Dict, List
 import numpy as np
 
-from .models import (
+from models import (
     FleetProfile, EnvironmentProfile, ScenarioConfig,
     ArrivalPattern, EV
 )
@@ -71,7 +71,7 @@ class Scenarios:
     @staticmethod
     def avm_medium() -> ScenarioConfig:
         """Orta ölçek AVM — varsayılan senaryo"""
-        from .models import (
+        from models import (
             ScenarioConfig, EnvironmentProfile, GridConfig, FleetProfile,
             ArrivalPattern, ChargingStation, StationType, StationLayout, EVModel
         )
@@ -116,7 +116,7 @@ class Scenarios:
     @staticmethod
     def office_large() -> ScenarioConfig:
         """Büyük ofis binası — 08-19 operasyon, sabah ağırlıklı geliş"""
-        from .models import (
+        from models import (
             ScenarioConfig, EnvironmentProfile, GridConfig, FleetProfile,
             ArrivalPattern, ChargingStation, StationType, StationLayout, EVModel
         )
@@ -160,7 +160,7 @@ class Scenarios:
     @staticmethod
     def hotel() -> ScenarioConfig:
         """Otel — 7/24 baz yük, araçlar akşam gelir"""
-        from .models import (
+        from models import (
             ScenarioConfig, EnvironmentProfile, GridConfig, FleetProfile,
             ArrivalPattern, ChargingStation, StationType, StationLayout, EVModel
         )
@@ -204,7 +204,7 @@ class Scenarios:
     @staticmethod
     def hospital() -> ScenarioConfig:
         """Hastane — 7/24 düz yük, vardiya değişimi geliş dalgaları"""
-        from .models import (
+        from models import (
             ScenarioConfig, EnvironmentProfile, GridConfig, FleetProfile,
             ArrivalPattern, ChargingStation, StationType, StationLayout, EVModel
         )
@@ -249,7 +249,7 @@ class Scenarios:
     @staticmethod
     def airport() -> ScenarioConfig:
         """Havalimanı — yüksek baz yük, sabah+akşam uçuş dalgaları"""
-        from .models import (
+        from models import (
             ScenarioConfig, EnvironmentProfile, GridConfig, FleetProfile,
             ArrivalPattern, ChargingStation, StationType, StationLayout, EVModel
         )
