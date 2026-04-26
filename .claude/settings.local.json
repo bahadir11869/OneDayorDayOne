@@ -4,7 +4,8 @@
       "Bash(python simulation.py)",
       "Bash(python3)",
       "Bash(python simulation_v3.py)",
-      "Bash(python3 -c ' *)"
+      "Bash(python3 -c ' *)",
+      "Bash(python *)"
     ]
   }
 }

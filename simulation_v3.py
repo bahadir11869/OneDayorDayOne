@@ -585,6 +585,249 @@ class ManagedController:
         self.power_log.append(self.bg_load[minute] + sum(allocs.values()))
         self.limit_log.append(limit)
 
+# ==============================================================================
+# Yeni Kontrolcüler
+# ==============================================================================
+
+class SRPTController:
+    """Shortest Remaining Processing Time — en az enerjisi kalan araca öncelik verir.
+    15 dk üzeri bekleyen araçların skoru ağırlık katsayısıyla düşürülür (= öncelik artar)."""
+
+    def __init__(self, stations, limit_policy, bg_load):
+        self.stations = stations
+        self.policy = limit_policy
+        self.bg_load = bg_load
+        self.queue = []
+        self.power_log = []
+        self.limit_log = []
+        self.completed = []
+        self.timeline_log = []
+
+    def allocate_power(self, minute: int) -> Dict[str, float]:
+        tod = minute % 1440
+        is_peak = self.policy.peak_start_min <= tod < self.policy.peak_end_min
+        limit = self.policy.evening_peak_kw if is_peak else self.policy.trafo_max_kw
+        base = self.bg_load[minute]
+
+        active = [s for s in self.stations if s.current_ev and not s.current_ev.is_satisfied]
+        allocs = {s.station_id: 0.0 for s in self.stations}
+        if not active:
+            return allocs
+
+        budget = max(0.0, limit - base - 0.01)
+
+        def srpt_key(s):
+            ev = s.current_ev
+            energy = ev.energy_needed_kwh
+            wait = minute - ev.arrival_minute
+            if wait > 15:
+                # Uzun bekleyenlerin efektif energy_needed değeri düşer → öncelik artar
+                penalty = 1.0 / (1.0 + 0.05 * (wait - 15))
+                energy = energy * penalty
+            return energy
+
+        # En düşük (ağırlıklı) energy_needed = en yüksek öncelik
+        sorted_active = sorted(active, key=srpt_key)
+
+        for s in sorted_active:
+            if budget <= 0.01:
+                break
+            give = min(s.effective_max_power_kw(), budget)
+            allocs[s.station_id] = give
+            budget -= give
+
+        return allocs
+
+    def step(self, minute: int):
+        for s in self.stations:
+            if not s.current_ev and self.queue:
+                s.current_ev = self.queue.pop(0)
+                s.current_ev.charge_start_minute = minute
+
+        tod = minute % 1440
+        limit = self.policy.evening_peak_kw if self.policy.peak_start_min <= tod < self.policy.peak_end_min else self.policy.trafo_max_kw
+        allocs = self.allocate_power(minute)
+
+        for ev in self.queue:
+            self.timeline_log.append({"Dakika": minute, "Araç ID": ev.session_id, "Durum": "Kuyrukta", "İstasyon": "-", "BazGüç (kW)": round(self.bg_load[minute], 1)})
+        for s in self.stations:
+            if s.current_ev:
+                self.timeline_log.append({"Dakika": minute, "Araç ID": s.current_ev.session_id, "Durum": "Şarjda", "İstasyon": s.station_id, "Güç (kW)": round(allocs[s.station_id], 1), "SoC (%)": round(s.current_ev.current_soc * 100, 1), "BazGüç (kW)": round(self.bg_load[minute], 1)})
+
+        for s in self.stations:
+            if s.current_ev:
+                s.current_ev.apply_power(allocs[s.station_id], minute)
+                if s.current_ev.is_satisfied:
+                    s.current_ev.departure_minute = minute
+                    self.completed.append(s.current_ev)
+                    s.current_ev = None
+
+        self.power_log.append(self.bg_load[minute] + sum(allocs.values()))
+        self.limit_log.append(limit)
+
+
+class WaterFillingController:
+    """Water-Filling — bütçeyi araçlara eşit böler; limite takılan araçın artığını
+    kalan araçlara yeniden eşit dağıtır. Döngü bütçe bitene kadar sürer."""
+
+    def __init__(self, stations, limit_policy, bg_load):
+        self.stations = stations
+        self.policy = limit_policy
+        self.bg_load = bg_load
+        self.queue = []
+        self.power_log = []
+        self.limit_log = []
+        self.completed = []
+        self.timeline_log = []
+
+    def allocate_power(self, minute: int) -> Dict[str, float]:
+        tod = minute % 1440
+        is_peak = self.policy.peak_start_min <= tod < self.policy.peak_end_min
+        limit = self.policy.evening_peak_kw if is_peak else self.policy.trafo_max_kw
+        base = self.bg_load[minute]
+
+        active = [s for s in self.stations if s.current_ev and not s.current_ev.is_satisfied]
+        allocs = {s.station_id: 0.0 for s in self.stations}
+        if not active:
+            return allocs
+
+        budget = max(0.0, limit - base - 0.01)
+
+        # Su doldurma: cap değeri küçük olanlar önce kesilebileceğinden artan sıraya diz
+        sorted_active = sorted(active, key=lambda s: s.effective_max_power_kw())
+        n = len(sorted_active)
+
+        for i, s in enumerate(sorted_active):
+            if budget <= 0.01:
+                break
+            remaining_count = n - i
+            share = budget / remaining_count          # kalan bütçeyi kalan araçlara eşit böl
+            give = min(s.effective_max_power_kw(), share)
+            allocs[s.station_id] = give
+            budget -= give                            # artan miktar sonraki araçlara geçer
+
+        return allocs
+
+    def step(self, minute: int):
+        for s in self.stations:
+            if not s.current_ev and self.queue:
+                s.current_ev = self.queue.pop(0)
+                s.current_ev.charge_start_minute = minute
+
+        tod = minute % 1440
+        limit = self.policy.evening_peak_kw if self.policy.peak_start_min <= tod < self.policy.peak_end_min else self.policy.trafo_max_kw
+        allocs = self.allocate_power(minute)
+
+        for ev in self.queue:
+            self.timeline_log.append({"Dakika": minute, "Araç ID": ev.session_id, "Durum": "Kuyrukta", "İstasyon": "-", "BazGüç (kW)": round(self.bg_load[minute], 1)})
+        for s in self.stations:
+            if s.current_ev:
+                self.timeline_log.append({"Dakika": minute, "Araç ID": s.current_ev.session_id, "Durum": "Şarjda", "İstasyon": s.station_id, "Güç (kW)": round(allocs[s.station_id], 1), "SoC (%)": round(s.current_ev.current_soc * 100, 1), "BazGüç (kW)": round(self.bg_load[minute], 1)})
+
+        for s in self.stations:
+            if s.current_ev:
+                s.current_ev.apply_power(allocs[s.station_id], minute)
+                if s.current_ev.is_satisfied:
+                    s.current_ev.departure_minute = minute
+                    self.completed.append(s.current_ev)
+                    s.current_ev = None
+
+        self.power_log.append(self.bg_load[minute] + sum(allocs.values()))
+        self.limit_log.append(limit)
+
+
+class DynamicFairController:
+    """Dinamik Ağırlıklı Aciliyet — bekleme süresi / kalan enerji skoruna göre
+    orantılı dağıtım yapar; SoC > %80 ise skoru %80 düşürür; taşan gücü yeniden dağıtır."""
+
+    def __init__(self, stations, limit_policy, bg_load):
+        self.stations = stations
+        self.policy = limit_policy
+        self.bg_load = bg_load
+        self.queue = []
+        self.power_log = []
+        self.limit_log = []
+        self.completed = []
+        self.timeline_log = []
+
+    def allocate_power(self, minute: int) -> Dict[str, float]:
+        tod = minute % 1440
+        is_peak = self.policy.peak_start_min <= tod < self.policy.peak_end_min
+        limit = self.policy.evening_peak_kw if is_peak else self.policy.trafo_max_kw
+        base = self.bg_load[minute]
+
+        active = [s for s in self.stations if s.current_ev and not s.current_ev.is_satisfied]
+        allocs = {s.station_id: 0.0 for s in self.stations}
+        if not active:
+            return allocs
+
+        budget = max(0.0, limit - base - 0.01)
+        caps = {s.station_id: s.effective_max_power_kw() for s in active}
+
+        def compute_score(s):
+            ev = s.current_ev
+            wait = minute - ev.arrival_minute + 1        # +1: 0'a bölünmeyi önle
+            energy = max(ev.energy_needed_kwh, 0.01)
+            soc_penalty = 0.2 if ev.current_soc > 0.80 else 1.0
+            return (wait / energy) * soc_penalty
+
+        pending = list(active)
+
+        while budget > 0.01 and pending:
+            scores = {s.station_id: compute_score(s) for s in pending}
+            total_score = sum(scores.values())
+            if total_score <= 0:
+                break
+
+            overflow = 0.0
+            new_pending = []
+            for s in pending:
+                proportion = scores[s.station_id] / total_score
+                want = budget * proportion
+                remaining_cap = caps[s.station_id] - allocs[s.station_id]
+                if want >= remaining_cap:
+                    allocs[s.station_id] += remaining_cap
+                    overflow += want - remaining_cap      # artığı havuza geri at
+                else:
+                    allocs[s.station_id] += want
+                    new_pending.append(s)
+
+            if not new_pending or overflow < 0.01:
+                break
+
+            budget = overflow
+            pending = new_pending
+
+        return allocs
+
+    def step(self, minute: int):
+        for s in self.stations:
+            if not s.current_ev and self.queue:
+                s.current_ev = self.queue.pop(0)
+                s.current_ev.charge_start_minute = minute
+
+        tod = minute % 1440
+        limit = self.policy.evening_peak_kw if self.policy.peak_start_min <= tod < self.policy.peak_end_min else self.policy.trafo_max_kw
+        allocs = self.allocate_power(minute)
+
+        for ev in self.queue:
+            self.timeline_log.append({"Dakika": minute, "Araç ID": ev.session_id, "Durum": "Kuyrukta", "İstasyon": "-", "BazGüç (kW)": round(self.bg_load[minute], 1)})
+        for s in self.stations:
+            if s.current_ev:
+                self.timeline_log.append({"Dakika": minute, "Araç ID": s.current_ev.session_id, "Durum": "Şarjda", "İstasyon": s.station_id, "Güç (kW)": round(allocs[s.station_id], 1), "SoC (%)": round(s.current_ev.current_soc * 100, 1), "BazGüç (kW)": round(self.bg_load[minute], 1)})
+
+        for s in self.stations:
+            if s.current_ev:
+                s.current_ev.apply_power(allocs[s.station_id], minute)
+                if s.current_ev.is_satisfied:
+                    s.current_ev.departure_minute = minute
+                    self.completed.append(s.current_ev)
+                    s.current_ev = None
+
+        self.power_log.append(self.bg_load[minute] + sum(allocs.values()))
+        self.limit_log.append(limit)
+
+
 class Simulation:
     def __init__(self, ctrl, schedule):
         self.ctrl = ctrl
@@ -659,52 +902,52 @@ def export_comparative_excel(ctrl_u: UnmanagedController, ctrl_m: ManagedControl
     except Exception as e:
         print(f"Excel aktarımı başarısız: {e}")
 
+def export_multi_controller_excel(all_controllers: list, fn="ev_coklu_kontrolcu_raporu.xlsx"):
+    """Tüm kontrolcülerin metriklerini ve istasyon loglarını tek Excel dosyasına yazar."""
+    metrics_data = []
+    for name, ctrl in all_controllers:
+        p = np.array(ctrl.power_log)
+        l = np.array(ctrl.limit_log)
+        over = p > l
+        completed = ctrl.completed
+        metrics_data.append({
+            "Kontrolcü": name,
+            "Tamamlanan Araç": len(completed),
+            "Maks Güç (kW)": round(float(p.max()), 1),
+            "Aşım Dakikası": int(over.sum()),
+            "Toplam Aşım (kWh)": round(float(np.where(over, p - l, 0).sum() / 60), 2),
+            "Ort. Bekleme (dk)": round(float(np.mean([e.wait_time_minutes for e in completed])) if completed else 0.0, 1),
+            "Ort. Şarj Süresi (dk)": round(float(np.mean([e.charge_minutes for e in completed])) if completed else 0.0, 1),
+        })
+
+    try:
+        with pd.ExcelWriter(fn, engine='openpyxl') as w:
+            pd.DataFrame(metrics_data).to_excel(w, sheet_name='Metrik_Karsilastirma', index=False)
+            for name, ctrl in all_controllers:
+                if ctrl.timeline_log:
+                    sheet_name = (name + "_Log")[:31]
+                    pd.DataFrame(build_station_matrix(ctrl.timeline_log)).to_excel(w, sheet_name=sheet_name, index=False)
+        print(f"✓ Çoklu kontrolcü Excel raporu: {fn}")
+    except Exception as e:
+        print(f"Çoklu Excel aktarımı başarısız: {e}")
+
 # ==============================================================================
 # Grafik ve Ana Akış
 # ==============================================================================
 class ExecutiveDashboard:
     @staticmethod
-    def create(r_u: SimulationResult, r_m: SimulationResult):
-        fig = plt.figure(figsize=(16, 24))
-        fig.suptitle("EV Şarj Yük Dengeleme — Yönetici Özeti", fontsize=18, fontweight="bold", y=0.995)
-        gs = GridSpec(4, 2, figure=fig, hspace=0.4, wspace=0.25)
-        axs = [fig.add_subplot(gs[i]) for i in [(0,0), (0,1), (1,0), (1,1), (2,0), (2,1), (3, slice(None))]]
+    def create(r_u: SimulationResult, r_m: SimulationResult,
+               ctrl_label: str = "Kontrol Sonrası",
+               filename: str = "executive_dashboard_v4.png",
+               bg_load: Optional[np.ndarray] = None):
+        fig = plt.figure(figsize=(16, 30))
+        fig.suptitle(f"EV Şarj Yük Dengeleme — {ctrl_label}", fontsize=18, fontweight="bold", y=0.995)
+        gs = GridSpec(5, 2, figure=fig, hspace=0.4, wspace=0.25)
+        axs = [fig.add_subplot(gs[i]) for i in [(0,0), (0,1), (1,0), (1,1), (2,0), (2,1), (3, slice(None)), (4, slice(None))]]
 
-        hrs = np.arange(1440) / 60
-        axs[0].fill_between(hrs, 0, r_u.power_timeseries, alpha=0.3, color="red", label="Kontrol Öncesi")
-        axs[0].plot(hrs, r_m.power_timeseries, lw=2.5, color="darkgreen", label="Kontrol Sonrası")
-        axs[0].plot(hrs, r_m.grid_limit_timeseries, color="red", ls="--", lw=2, label="Trafo Limiti")
-        axs[0].axvspan(17, 22, alpha=0.08, color="orange", label="Şebeke Pik (17-22)")
-        axs[0].set(xlabel="Gün Saati", ylabel="Yük (kW)", title="Panel 1: Yük Profili", xlim=(0,24))
-        axs[0].legend(loc="upper left"); axs[0].grid(True, alpha=0.3)
-
-        w = [s.wait_time_minutes for s in r_m.vehicle_sessions]
-        bars = axs[1].bar(["0 dk", "1-15 dk", "15+ dk"], [sum(1 for x in w if x==0), sum(1 for x in w if 0<x<=15), sum(1 for x in w if x>15)], color=["#2ecc71", "#f39c12", "#e74c3c"], edgecolor="black")
-        axs[1].set(ylabel="Araç", title="Panel 2: Bekleme Dağılımı")
-        for b in bars: axs[1].text(b.get_x() + b.get_width()/2, b.get_height()+0.3, str(int(b.get_height())), ha="center", va="bottom", fontweight="bold")
-
+                        
         mods = sorted(list({s.model_name.split()[0] for s in r_u.vehicle_sessions}))
-        g = lambda r: {m: [] for m in mods}
-        c_u, c_m, w_u, w_m = g(r_u), g(r_m), g(r_u), g(r_m)
-        for s in r_u.vehicle_sessions: m=s.model_name.split()[0]; c_u[m].append(s.charge_time_minutes); w_u[m].append(s.wait_time_minutes)
-        for s in r_m.vehicle_sessions: m=s.model_name.split()[0]; c_m[m].append(s.charge_time_minutes); w_m[m].append(s.wait_time_minutes)
         x = np.arange(len(mods)); wd = 0.35
-
-        axs[2].bar(x-wd/2, [np.mean(c_u[m]) for m in mods], wd, color="lightcoral", ec="black", label="Öncesi")
-        axs[2].bar(x+wd/2, [np.mean(c_m[m]) for m in mods], wd, color="lightgreen", ec="black", label="Sonrası")
-        axs[2].set(ylabel="Şarj (dk)", title="Panel 3: Şarj Süresi", xticks=x, xticklabels=mods); axs[2].legend()
-
-        axs[3].bar(x-wd/2, [np.mean(w_u[m]) for m in mods], wd, color="#f9c784", ec="black", label="Öncesi")
-        axs[3].bar(x+wd/2, [np.mean(w_m[m]) for m in mods], wd, color="#74b9ff", ec="black", label="Sonrası")
-        axs[3].set(ylabel="Bekleme (dk)", title="Panel 4: Bekleme Süresi", xticks=x, xticklabels=mods); axs[3].legend()
-
-        axs[4].axis("off")
-        axs[4].text(0.05, 0.95, f"Kapasite: {r_m.metrics_summary.protected_capacity_percent:.1f}%\nServis: {r_m.metrics_summary.evs_completed} araç\nAlgoritma: İsyan Protokolü + %70 Kısıt", transform=axs[4].transAxes, fontsize=12, va="top", bbox=dict(boxstyle="round", fc="lightgreen", alpha=0.4))
-
-        axs[5].bar(x-wd/2, [np.mean(c_u[m])+np.mean(w_u[m]) for m in mods], wd, color="lightcoral", ec="black")
-        axs[5].bar(x+wd/2, [np.mean(c_m[m])+np.mean(w_m[m]) for m in mods], wd, color="lightgreen", ec="black")
-        axs[5].set(ylabel="Sistem (dk)", title="Panel 6: Toplam Süre", xticks=x, xticklabels=mods)
-
         ud = {s.session_id: s for s in r_u.vehicle_sessions}
         d_c, d_w = {m: [] for m in mods}, {m: [] for m in mods}
         for s in r_m.vehicle_sessions:
@@ -713,16 +956,78 @@ class ExecutiveDashboard:
                 d_c[m].append(s.charge_time_minutes - ud[s.session_id].charge_time_minutes)
                 d_w[m].append(max(0, s.wait_time_minutes - ud[s.session_id].wait_time_minutes))
 
-        w7 = 0.2
-        axs[6].bar(x-1.5*w7, [max(d_c[m]) if d_c[m] else 0 for m in mods], w7, color="#e74c3c", ec="black", label="Maks Şarj Artışı")
-        axs[6].bar(x-0.5*w7, [min(d_c[m]) if d_c[m] else 0 for m in mods], w7, color="#f1948a", ec="black", label="Min Şarj Artışı")
-        axs[6].bar(x+0.5*w7, [max(d_w[m]) if d_w[m] else 0 for m in mods], w7, color="#2980b9", ec="black", label="Maks Bekleme Artışı")
-        axs[6].bar(x+1.5*w7, [min(d_w[m]) if d_w[m] else 0 for m in mods], w7, color="#7fb3d5", ec="black", label="Min Bekleme Artışı")
-        axs[6].set(xticks=x, xticklabels=mods, ylabel="Delta (dk)", title="Panel 7: Maks/Min Gecikme")
-        axs[6].legend(loc="upper left"); axs[6].grid(True, alpha=0.3, axis="y")
 
-        plt.savefig("executive_dashboard_v4.png", dpi=150, bbox_inches="tight")
-        print("✓ Grafik: executive_dashboard_v4.png")
+        w7 = 0.2
+        axs[0].bar(x-1.5*w7, [max(d_c[m]) if d_c[m] else 0 for m in mods], w7, color="#e74c3c", ec="black", label="Maks Şarj Artışı")
+        axs[0].bar(x-0.5*w7, [min(d_c[m]) if d_c[m] else 0 for m in mods], w7, color="#f1948a", ec="black", label="Min Şarj Artışı")
+        axs[0].bar(x+0.5*w7, [max(d_w[m]) if d_w[m] else 0 for m in mods], w7, color="#2980b9", ec="black", label="Maks Bekleme Artışı")
+        axs[0].bar(x+1.5*w7, [min(d_w[m]) if d_w[m] else 0 for m in mods], w7, color="#7fb3d5", ec="black", label="Min Bekleme Artışı")
+        axs[0].set(xticks=x, xticklabels=mods, ylabel="Delta (dk)", title="Panel 1: Maks/Min Gecikme")
+        axs[0].legend(loc="upper left"); axs[0].grid(True, alpha=0.3, axis="y")
+
+
+        hrs = np.arange(1440) / 60
+        axs[6].fill_between(hrs, 0, r_u.power_timeseries, alpha=0.3, color="red", label="Kontrol Öncesi")
+        axs[6].plot(hrs, r_m.power_timeseries, lw=2.5, color="darkgreen", label=ctrl_label)
+        axs[6].plot(hrs, r_m.grid_limit_timeseries, color="red", ls="--", lw=2, label="Trafo Limiti")
+        axs[6].axvspan(17, 22, alpha=0.08, color="orange", label="Şebeke Pik (17-22)")
+        axs[6].set(xlabel="Gün Saati", ylabel="Yük (kW)", title="Panel 7: Toplam Yük Profili", xlim=(0,24))
+        axs[6].legend(loc="upper left"); axs[6].grid(True, alpha=0.3)
+
+        w = [s.wait_time_minutes for s in r_m.vehicle_sessions]
+        bars = axs[1].bar(["0 dk", "1-15 dk", "15+ dk"], [sum(1 for x in w if x==0), sum(1 for x in w if 0<x<=15), sum(1 for x in w if x>15)], color=["#2ecc71", "#f39c12", "#e74c3c"], edgecolor="black")
+        axs[1].set(ylabel="Araç", title="Panel 2: Bekleme Dağılımı")
+        for b in bars: axs[1].text(b.get_x() + b.get_width()/2, b.get_height()+0.3, str(int(b.get_height())), ha="center", va="bottom", fontweight="bold")
+
+
+        g = lambda r: {m: [] for m in mods}
+        c_u, c_m, w_u, w_m = g(r_u), g(r_m), g(r_u), g(r_m)
+        for s in r_u.vehicle_sessions: m=s.model_name.split()[0]; c_u[m].append(s.charge_time_minutes); w_u[m].append(s.wait_time_minutes)
+        for s in r_m.vehicle_sessions: m=s.model_name.split()[0]; c_m[m].append(s.charge_time_minutes); w_m[m].append(s.wait_time_minutes)
+        
+
+        axs[2].bar(x-wd/2, [np.mean(c_u[m]) for m in mods], wd, color="lightcoral", ec="black", label="Öncesi")
+        axs[2].bar(x+wd/2, [np.mean(c_m[m]) for m in mods], wd, color="lightgreen", ec="black", label=ctrl_label)
+        axs[2].set(ylabel="Şarj (dk)", title="Panel 3: Şarj Süresi", xticks=x, xticklabels=mods); axs[2].legend()
+
+        axs[3].bar(x-wd/2, [np.mean(w_u[m]) for m in mods], wd, color="#f9c784", ec="black", label="Öncesi")
+        axs[3].bar(x+wd/2, [np.mean(w_m[m]) for m in mods], wd, color="#74b9ff", ec="black", label=ctrl_label)
+        axs[3].set(ylabel="Bekleme (dk)", title="Panel 4: Bekleme Süresi", xticks=x, xticklabels=mods); axs[3].legend()
+
+        axs[4].axis("off")
+        axs[4].text(0.05, 0.95,
+                    f"Algoritma: {ctrl_label}\n"
+                    f"Kapasite: {r_m.metrics_summary.protected_capacity_percent:.1f}%\n"
+                    f"Servis: {r_m.metrics_summary.evs_completed} araç\n"
+                    f"Ort. Bekleme: {r_m.metrics_summary.avg_delay_minutes:.1f} dk\n"
+                    f"Aşım: {r_m.metrics_summary.overload_minutes} dk  |  {r_m.metrics_summary.total_overload_kwh:.1f} kWh",
+                    transform=axs[4].transAxes, fontsize=12, va="top",
+                    bbox=dict(boxstyle="round", fc="lightgreen", alpha=0.4))
+
+        axs[5].bar(x-wd/2, [np.mean(c_u[m])+np.mean(w_u[m]) for m in mods], wd, color="lightcoral", ec="black", label="Öncesi")
+        axs[5].bar(x+wd/2, [np.mean(c_m[m])+np.mean(w_m[m]) for m in mods], wd, color="lightgreen", ec="black", label=ctrl_label)
+        axs[5].set(ylabel="Sistem (dk)", title="Panel 6: Toplam Süre", xticks=x, xticklabels=mods); axs[5].legend()
+
+
+
+
+
+        # ── Panel 8: Baz Yük Profili (İstasyon Yükü Hariç) ───────────────────
+        if bg_load is not None:
+            axs[7].fill_between(hrs, 0, bg_load, alpha=0.35, color="steelblue", label="Baz Yük")
+            axs[7].plot(hrs, bg_load, lw=2, color="steelblue")
+            axs[7].plot(hrs, r_m.grid_limit_timeseries, color="red", ls="--", lw=2, label="Trafo Limiti")
+            axs[7].axvspan(17, 22, alpha=0.08, color="orange", label="Şebeke Pik (17-22)")
+            axs[7].set(xlabel="Gün Saati", ylabel="Yük (kW)",
+                       title="Panel 8: Baz Yük Profili (İstasyon Yükü Hariç)", xlim=(0, 24))
+            axs[7].legend(loc="upper left"); axs[7].grid(True, alpha=0.3)
+        else:
+            axs[7].axis("off")
+            axs[7].text(0.5, 0.5, "Baz yük verisi mevcut değil",
+                        ha="center", va="center", transform=axs[7].transAxes, fontsize=12)
+
+        plt.savefig(filename, dpi=150, bbox_inches="tight")
+        print(f"✓ Grafik: {filename}")
         plt.show()
 
 def main(generate_new: bool = False, config: Optional[ScenarioConfig] = None):
@@ -761,6 +1066,9 @@ def main(generate_new: bool = False, config: Optional[ScenarioConfig] = None):
 
     st_a = config.layout.stations
     st_b = copy.deepcopy(st_a)
+    st_c = copy.deepcopy(st_a)
+    st_d = copy.deepcopy(st_a)
+    st_e = copy.deepcopy(st_a)
 
     ctrl_a = UnmanagedController(st_a, policy, bg_load)
     res_a = Simulation(ctrl_a, copy.deepcopy(schedule)).run()
@@ -768,8 +1076,42 @@ def main(generate_new: bool = False, config: Optional[ScenarioConfig] = None):
     ctrl_b = ManagedController(st_b, policy, bg_load)
     res_b = Simulation(ctrl_b, copy.deepcopy(schedule)).run()
 
+    ctrl_c = SRPTController(st_c, policy, bg_load)
+    res_c = Simulation(ctrl_c, copy.deepcopy(schedule)).run()
+
+    ctrl_d = WaterFillingController(st_d, policy, bg_load)
+    res_d = Simulation(ctrl_d, copy.deepcopy(schedule)).run()
+
+    ctrl_e = DynamicFairController(st_e, policy, bg_load)
+    res_e = Simulation(ctrl_e, copy.deepcopy(schedule)).run()
+
+    # Orijinal ikili karşılaştırma raporunu koru
     export_comparative_excel(ctrl_a, ctrl_b)
-    ExecutiveDashboard.create(res_a, res_b)
+
+    # Tüm 5 kontrolcünün karşılaştırmalı raporu
+    all_ctrls = [
+        ("Algoritmasiz", ctrl_a),
+        ("Yonetimli",    ctrl_b),
+        ("SRPT",         ctrl_c),
+        ("Su_Doldurma",  ctrl_d),
+        ("Dinamik_Adil", ctrl_e),
+    ]
+    export_multi_controller_excel(all_ctrls)
+
+    # Konsol özeti
+    print(f"\n{'Kontrolcü':<20} {'Araç':>6} {'MaksGüç(kW)':>12} {'AşımDk':>8} {'AşımkWh':>9} {'OrtBkl(dk)':>11} {'OrtŞarj(dk)':>12}")
+    print("-" * 82)
+    for name, ctrl in all_ctrls:
+        p = np.array(ctrl.power_log); l = np.array(ctrl.limit_log); over = p > l
+        c = ctrl.completed
+        avw = np.mean([e.wait_time_minutes for e in c]) if c else 0.0
+        avc = np.mean([e.charge_minutes   for e in c]) if c else 0.0
+        print(f"{name:<20} {len(c):>6} {p.max():>12.1f} {int(over.sum()):>8} {float(np.where(over,p-l,0).sum()/60):>9.2f} {avw:>11.1f} {avc:>12.1f}")
+
+    ExecutiveDashboard.create(res_a, res_b, ctrl_label="Yönetimli",    filename="dashboard_yonetimli.png",    bg_load=bg_load)
+    ExecutiveDashboard.create(res_a, res_c, ctrl_label="SRPT",         filename="dashboard_srpt.png",         bg_load=bg_load)
+    ExecutiveDashboard.create(res_a, res_d, ctrl_label="Su Doldurma",  filename="dashboard_su_doldurma.png",  bg_load=bg_load)
+    ExecutiveDashboard.create(res_a, res_e, ctrl_label="Dinamik Adil", filename="dashboard_dinamik_adil.png", bg_load=bg_load)
 
 if __name__ == "__main__":
     _SCENARIO_MAP = {
