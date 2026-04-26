@@ -1,0 +1,1036 @@
+% =================================================================
+% EV Yük Dengeleme — Birleşik Teknik & İş Planı (v1)
+% 3 Kurucu, 12 Ay Hedef
+%
+% Derleme: pdflatex teknik_is_plani.tex (2 kez — toc için)
+% =================================================================
+\documentclass[11pt,a4paper]{article}
+
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage[turkish]{babel}
+\usepackage[a4paper, margin=2.2cm]{geometry}
+\usepackage{titlesec}
+\usepackage{enumitem}
+\usepackage{xcolor}
+\usepackage{tabularx}
+\usepackage{booktabs}
+\usepackage{longtable}
+\usepackage{array}
+\usepackage{hyperref}
+\usepackage{parskip}
+\usepackage{tcolorbox}
+\usepackage{listings}
+
+\hypersetup{
+    colorlinks=true,
+    linkcolor=blue!50!black,
+    urlcolor=blue!60!black
+}
+
+\titleformat{\section}{\Large\bfseries\color{blue!40!black}}{\thesection}{0.6em}{}
+\titleformat{\subsection}{\large\bfseries\color{blue!30!black}}{\thesubsection}{0.5em}{}
+\titleformat{\subsubsection}{\normalsize\bfseries\color{blue!20!black}}{\thesubsubsection}{0.4em}{}
+
+\setlist[itemize]{leftmargin=1.2em, itemsep=2pt, topsep=3pt}
+\setlist[enumerate]{leftmargin=1.4em, itemsep=2pt, topsep=3pt}
+
+\newtcolorbox{notebox}[1][]{colback=yellow!8, colframe=yellow!50!black, boxrule=0.4pt, arc=2pt, left=6pt, right=6pt, top=3pt, bottom=3pt, #1}
+\newtcolorbox{redbox}[1][]{colback=red!5, colframe=red!50!black, boxrule=0.4pt, arc=2pt, left=6pt, right=6pt, top=3pt, bottom=3pt, #1}
+\newtcolorbox{greenbox}[1][]{colback=green!5, colframe=green!50!black, boxrule=0.4pt, arc=2pt, left=6pt, right=6pt, top=3pt, bottom=3pt, #1}
+
+\title{\textbf{EV Yük Dengeleme — Teknik \& İş Planı}\\
+       \large Birleşik Yol Haritası — 3 Kurucu, 12 Ay\\
+       \normalsize v1, \today}
+\author{}
+\date{}
+
+\begin{document}
+\maketitle
+\tableofcontents
+\newpage
+
+% ===================================================================
+\section{Yönetici Özeti}
+
+Bu doküman, \texttt{simulation\_v3.py} prototipinden yola çıkarak Türkiye'de ticari ürün haline getirme planının \textbf{hem teknik hem de iş} cephesini birleştirir. Hedef: 12 ay sonunda en az 5 ödeyen kurumsal müşteri, çalışan bulut platformu, ölçülebilir ROI raporu, Seed turuna hazır metrikler.
+
+\begin{notebox}
+\textbf{Şu anda neredeyiz (TRL 3 — Lab Prototipi):}
+\begin{itemize}
+    \item \texttt{simulation\_v3.py}: 5 algoritmalı (Algoritmasız / Yönetimli / SRPT / Water-Filling / Dinamik Adil), 5 saha senaryolu (AVM, ofis, otel, hastane, havalimanı) çalışan dakika çözünürlüklü simülatör.
+    \item Sentetik veri (\texttt{dataset.json}) ile test edilmiş; gerçek charger, gerçek tarife, gerçek müşteri yok.
+    \item Tek-süreçli (mono script), tek-saha, tek-gün simülasyon.
+    \item Excel + matplotlib raporları üretiliyor.
+\end{itemize}
+\textbf{Eksikler — 12 ayda kapatılacak:} Maliyet modeli, OCPP entegrasyonu, gerçek-zamanlı veri toplama, yük tahmini, çoklu kiracı bulut mimarisi, güvenlik/uyum, harmonik analiz (Faz 4).
+\end{notebox}
+
+\textbf{Stratejik öneri (TL;DR):}
+\begin{itemize}
+    \item \textbf{Salt yazılım} (donanım üretmiyoruz). OCPP üzerinden mevcut chargerlara bağlanıyoruz.
+    \item \textbf{Birincil müşteri = saha sahibi} (AVM, otopark, lojistik depo, otel). CPO ikinci faz, devlet üçüncü faz.
+    \item \textbf{İlk para = TÜBİTAK 1512 BiGG} (200K TL hibe, geri ödemesiz). Pre-seed Ay 5--8 arası.
+    \item \textbf{Konumlanma:} EPDK lisanslı CPO \textbf{değil}, \textit{energy management software vendor}.
+    \item \textbf{Donanım yatırımı minimum:} 1 lab charger (Vestel Bonus DC ya da kullanılmış EVlink), 1 Power Quality Analyzer, 1 endüstriyel switch, akıllı sayaç. Toplam: 80--150K TL.
+\end{itemize}
+
+% ===================================================================
+\section{Mevcut Durum — Teknik Değerlendirme}
+
+\subsection{Sahip Olduklarımız}
+
+\begin{tabularx}{\textwidth}{l X}
+\toprule
+\textbf{Bileşen} & \textbf{Durum} \\
+\midrule
+Algoritma çekirdeği & 5 controller (UnmanagedController, ManagedController, SRPTController, WaterFillingController, DynamicFairController) \\
+Saha senaryoları & 5 (AVM, ofis, otel, hastane, havalimanı) farklı trafo / yük profili \\
+Veri modeli & EV, EVModel, ChargingStation, ScenarioConfig, GridConfig, EnvironmentProfile, FleetProfile, ArrivalPattern \\
+Veri kaynağı & Sentetik (\texttt{dataset.json}) — \texttt{ArrivalGenerator} + \texttt{BackgroundLoadGenerator} \\
+Çıktı & Excel (matris formatlı), matplotlib dashboards (PNG), konsol özet \\
+Konfigürasyon & JSON içe/dışa aktarım (\texttt{ScenarioConfig.from\_dict / to\_dict}) \\
+\bottomrule
+\end{tabularx}
+
+\subsection{Sahip Olmadıklarımız (Kritik Boşluklar)}
+
+\begin{enumerate}
+    \item \textbf{Maliyet modeli yok:} Tarife, demand charge, ROI hesabı yok.
+    \item \textbf{Gerçek-zamanlı veri yok:} OCPP/Modbus/akıllı sayaç entegrasyonu yok.
+    \item \textbf{Yük tahmini yok:} Mevcut \texttt{BackgroundLoadGenerator} sentetik bir model; gerçek tahmin/öğrenme yok.
+    \item \textbf{Bulut mimarisi yok:} Mono-script; multi-tenant, API, persistence yok.
+    \item \textbf{Müşteri arayüzü yok:} Web dashboard, mobil, alarm yok.
+    \item \textbf{Güvenlik yok:} TLS, kimlik doğrulama, KVKK yok.
+    \item \textbf{Tahmin/Karar ayrımı yok:} Karar zamanlaması (rolling horizon), ufuk tabanlı optimizasyon yok.
+    \item \textbf{Harmonik / güç kalitesi yok:} THD, power factor, dengesizlik analizi yok.
+    \item \textbf{Faturalama / ödeme yok:} Şarj seansının parasal karşılığı, fatura, POS yok.
+    \item \textbf{PV / ESS entegrasyonu yok:} Solar self-consumption, batarya optimizasyonu yok.
+    \item \textbf{Logging / Observability yok:} Üretim seviyesi log yok.
+    \item \textbf{CI/CD / Test yok:} Otomatik test, kalite kapısı yok.
+\end{enumerate}
+
+\subsection{TRL Seviyesi}
+
+\textbf{Mevcut: TRL 3 (Analitik/Deneysel kavram kanıtlama).} Hedef Faz 1 sonu: TRL 5 (laboratuvar ortamında ilgili teknolojide doğrulama). Hedef Faz 2 sonu: TRL 7 (saha pilotunda gösterim). 12 ay sonu hedef: TRL 8 (gerçek koşullarda tamamlanmış sistem).
+
+% ===================================================================
+\section{Boşluk Analizi — 12 Modülün Detaylı Yol Haritası}
+
+Bu bölüm her eksik modülü ayrı ayrı ele alır: \textit{ne lazım, neden lazım, nasıl yaparız, ne kadar sürer, kim yapar.}
+
+% -------------------------------------------------------------------
+\subsection{Modül A — Maliyet \& Tarife Modeli}
+
+\subsubsection{Neden Kritik}
+Müşteriye ``\%30 tasarruf sağlarım'' diyeceksen tasarrufun para karşılığını hesaplaman lazım. Türkiye'de elektrik tarifesi \textbf{kademeli, zamanlı (TOU), demand-charge'lı}. Müşteri sözleşmesinin ROI cümlesi bu modelden çıkar.
+
+\subsubsection{Türkiye Tarife Yapısı (Sanayi/Ticari, AG-OG)}
+
+\begin{tabularx}{\textwidth}{l l X}
+\toprule
+\textbf{Bileşen} & \textbf{Birim} & \textbf{Açıklama} \\
+\midrule
+Aktif enerji & TL/kWh & Üç dilim: Gündüz (06--17), Puant (17--22), Gece (22--06). EPDK her çeyrek günceller. \\
+Reaktif enerji & TL/kVArh & Endüktif/kapasitif, oran sınırlarına bağlı (\%20 endüktif, \%15 kapasitif). \\
+Güç bedeli & TL/kW.ay & Talep edilen aylık maksimum güç (yalnızca OG müşteri). \\
+Dağıtım bedeli & TL/kWh & DSO'ya (BEDAŞ vs.) ödeme. \\
+İletim sistemi & TL/kWh & TEİAŞ. \\
+Vergi/fonlar & \% & KDV \%20, TRT (\%2 — EV şarjda hariç olabilir, kontrol et), BTV, Enerji Fonu. \\
+\bottomrule
+\end{tabularx}
+
+\textbf{Önemli:} EV şarjda BTV (\%17) tartışmalı; EPDK ve Hazine duyuruları takip edilmeli.
+
+\subsubsection{Eklenecek Kod Modülü}
+
+\texttt{tariff/} alt-paketi:
+\begin{itemize}
+    \item \texttt{tariff/tedaş\_2026.json} — güncel tarife verileri.
+    \item \texttt{tariff/calculator.py} — \texttt{calculate\_cost(power\_timeseries, tariff, peak\_hours)} → toplam TL.
+    \item \texttt{tariff/demand\_charge.py} — aylık 15-dk maksimum güç hesabı.
+    \item \texttt{tariff/roi\_simulator.py} — \texttt{simulate\_roi(baseline, optimized, capex)} → geri ödeme süresi.
+\end{itemize}
+
+\subsubsection{Süre \& Sahip}
+\textbf{Sprint:} 2 hafta. \textbf{Sahip:} CTO/Algoritma. \textbf{Bağımlılık:} EPDK tarife doğrulaması (Operasyon kurucusu).
+
+% -------------------------------------------------------------------
+\subsection{Modül B — Gerçek-zamanlı Şebeke Verisi Toplama}
+
+\subsubsection{Soru: ``Anlık veri nereden gelecek?''}
+
+Üç farklı veri kaynağı var, üçü de farklı erişim yolu istiyor:
+
+\begin{tabularx}{\textwidth}{l X X}
+\toprule
+\textbf{Kaynak} & \textbf{Ne ölçer?} & \textbf{Erişim Yolu} \\
+\midrule
+Şarj cihazı (EVSE) & Anlık güç, enerji, hata, transaction & \textbf{OCPP 1.6/2.0.1} (websocket/MQTT) \\
+Saha akıllı sayaç & Toplam saha gücü, harmonik, PF & \textbf{Modbus TCP/RTU}, \textbf{IEC 61850} (substation), \textbf{DLMS/COSEM} (smart meter standardı) \\
+Trafo / OG panel & Trafo yükü, kademe, alarm & Çoğu sahada SCADA yok; akıllı sayaç + akım trafosu (CT) gerekir \\
+DSO API'leri & Şebeke kısıtı, talep yanıtı sinyali & \textbf{Türkiye'de henüz açık değil} — BEDAŞ pilot programı dışında \\
+EPİAŞ Şeffaflık & Toptan elektrik fiyatı, saatlik üretim/tüketim & Açık API: \texttt{https://seffaflik.epias.com.tr} (OAuth2) \\
+\bottomrule
+\end{tabularx}
+
+\begin{redbox}
+\textbf{Gerçek:} Türkiye'de \textbf{DSO seviyesi açık API yok}. Anlık şebeke yükünü doğrudan BEDAŞ'tan alamazsın. Saha düzeyindeki ölçümü \textbf{kendi akıllı sayacınla} yapacaksın. EPİAŞ sadece toptan piyasa verisi (saatlik granülerlik, ulusal toplam) verir; bireysel saha yükü vermez.
+\end{redbox}
+
+\subsubsection{Pratik Strateji}
+\begin{enumerate}
+    \item \textbf{Saha çıkışına 1 akıllı sayaç} koy — ABB B23, Schneider iEM3000, Janitza UMG (harmonik için).
+    \item Sayacın Modbus TCP çıkışını yerel bir IoT gateway'e (Raspberry Pi 4, Siemens IOT2050) bağla.
+    \item Gateway $\rightarrow$ MQTT broker (HiveMQ Cloud / EMQX) $\rightarrow$ Bulut ingestion.
+    \item Şarj cihazlarının OCPP bağlantısı doğrudan buluta (saha gateway'den geçirme — daha güvenli olur).
+\end{enumerate}
+
+\subsubsection{Süre \& Sahip}
+\textbf{Sprint:} 4 hafta (lab kurulumu + Modbus okuyucu + MQTT pipeline). \textbf{Sahip:} Embedded/OCPP kurucusu.
+
+% -------------------------------------------------------------------
+\subsection{Modül C — OCPP Öğrenme \& Entegrasyon}
+
+\subsubsection{OCPP nedir?}
+\textbf{Open Charge Point Protocol} — şarj cihazı (Charge Point) ile merkezi sistem (Central System / CSMS) arasında standartlaştırılmış mesajlaşma protokolü. Open Charge Alliance (OCA) tarafından yönetilir. Bizim için kritik mesajlar:
+
+\begin{tabularx}{\textwidth}{l X}
+\toprule
+\textbf{Mesaj} & \textbf{Ne işe yarar} \\
+\midrule
+\texttt{BootNotification} & Charger sisteme katılır; biz onayla, heartbeat aralığı belirleriz. \\
+\texttt{Heartbeat} & Charger her N saniyede ``hayatta'' der. \\
+\texttt{StartTransaction} / \texttt{StopTransaction} (1.6) / \texttt{TransactionEvent} (2.0) & Şarj seansı başla/bitti. \\
+\texttt{MeterValues} & Anlık güç, enerji, gerilim, akım. \\
+\texttt{StatusNotification} & Soket durumu (Available, Charging, Faulted...). \\
+\texttt{SetChargingProfile} & \textbf{Bizim güç limiti gönderdiğimiz mesaj — hayati.} \\
+\texttt{RemoteStartTransaction} / \texttt{RemoteStopTransaction} & Uzaktan şarj başlat/durdur. \\
+\bottomrule
+\end{tabularx}
+
+\subsubsection{Öğrenme Yolu (4 Hafta)}
+
+\textbf{Hafta 1 — Standart oku:}
+\begin{itemize}
+    \item OCPP 1.6 Edition 2 spec PDF (yaklaşık 90 sayfa).
+    \item Open Charge Alliance üyeliği (\$1500/yıl) — lab kullanım için zorunlu değil ama sertifikasyon için gerekli.
+    \item ``OCPP Smart Charging'' beyaz kitap.
+\end{itemize}
+
+\textbf{Hafta 2 — Lab simülasyon:}
+\begin{itemize}
+    \item \texttt{mobilityhouse/ocpp} (Python kütüphanesi) — açık kaynak, en yaygın.
+    \item \texttt{SteVe} (Java backend) — hazır CSMS, kod okumak için iyi.
+    \item Sahte charger simülatörü: \texttt{ocpp-cp-py} veya MAEVe.
+    \item Lokalde 1 ``CSMS'' + 5 ``charger'' simülatörü çalıştır, mesaj akışını gör.
+\end{itemize}
+
+\textbf{Hafta 3 — Gerçek charger lab testi:}
+\begin{itemize}
+    \item Vestel Bonus DC veya 2. el ABB Terra alın (kira da olur).
+    \item Charger'ı internete (kendi VPN ya da DDNS ile) bağla.
+    \item OCPP konfigürasyonunu CSMS URL'ine yönlendir.
+    \item İlk \texttt{BootNotification} alındığı an sevin.
+\end{itemize}
+
+\textbf{Hafta 4 — Smart Charging:}
+\begin{itemize}
+    \item \texttt{SetChargingProfile} ile statik 11 kW limit gönder.
+    \item Sonra dinamik limit: simülasyondaki \texttt{DynamicFairController}'dan çıkan limit\_kw'yi gerçek charger'a uygula.
+    \item Validasyon: charger gerçekten limit'e uyuyor mu? \texttt{MeterValues}'dan kontrol et.
+\end{itemize}
+
+\subsubsection{Charger Üreticileri Türkiye Listesi}
+
+\begin{tabularx}{\textwidth}{l l X}
+\toprule
+\textbf{Üretici} & \textbf{Model Örneği} & \textbf{OCPP Notu} \\
+\midrule
+Vestel & Bonus AC22, Bonus DC60--180 & 1.6J, Smart Charging mevcut \\
+Phihong & DC fast & 1.6J, 2.0 yol haritası \\
+ABB & Terra AC, Terra DC & 1.6J + 2.0.1 (yeni firmware) \\
+EnerjiSA & Eşarj cihazları & 1.6J \\
+ZES & Kendi cihazları + 3rd-party & 1.6J \\
+Schneider & EVlink Pro AC, EVlink DC & 1.6J + 2.0.1 \\
+Wallbox (İspanya) & Pulsar, Quasar & 1.6J + 2.0 \\
+Charpoint (US) & CT4000 & 1.6J — daha kapalı ekosistem \\
+\bottomrule
+\end{tabularx}
+
+\textbf{Tavsiye:} İlk pilotta Vestel veya ABB Terra. Sebep: Türkiye servis ağı + iyi OCPP destek + makul fiyat.
+
+\subsubsection{Süre \& Sahip}
+\textbf{Sprint:} 4 hafta öğrenme + 4 hafta production-ready entegrasyon. \textbf{Sahip:} Embedded/OCPP kurucusu birincil; CTO destek.
+
+% -------------------------------------------------------------------
+\subsection{Modül D — Lokal Yük Tahmini (ML/AI)}
+
+\subsubsection{Soru: ``Model mi eğiteceğiz, veri seti var mı?''}
+
+\textbf{Cevap: Evet, eğiteceğiz. Kendi veriniz olana kadar transfer learning + public veri.}
+
+\subsubsection{Tahmin Edilecek Şey Ne?}
+
+İki ayrı tahmin problemi var:
+\begin{enumerate}
+    \item \textbf{Saha baz yükü tahmini} (background load forecast) --- AVM/otel/fabrikanın sonraki 1-24 saat tüketimi. Bu mevcut sim'deki \texttt{BackgroundLoadGenerator}'ın yerini alır.
+    \item \textbf{EV gelişi/SoC tahmini} (EV arrival forecast) --- sonraki saatlerde kaç araç gelecek, tahmini SoC dağılımı. Bu \texttt{ArrivalGenerator}'ın yerini alır.
+\end{enumerate}
+
+\subsubsection{Veri Seti Stratejisi}
+
+\textbf{Public veri setleri (eğitim için ön-prior):}
+
+\begin{tabularx}{\textwidth}{l X l}
+\toprule
+\textbf{Veri seti} & \textbf{İçerik} & \textbf{Lisans} \\
+\midrule
+ENTSO-E Transparency & TR dahil 30+ ülke saatlik tüketim/üretim & Açık \\
+EPİAŞ Şeffaflık & TR saatlik tüketim, üretim, fiyat & Açık (kayıt) \\
+UCI ML Repo --- ``Electricity Load Diagrams'' & Portekiz 370 müşteri 15-dk yük & Açık \\
+UMass Smart$\ast$ Dataset & ABD bina + apartman & Akademik \\
+Pecan Street Dataport & ABD residence (EV charging dahil) & Akademik (\$\$ ticari) \\
+ACN-Data (Caltech) & ABD üniversite kampüsü EV şarj & Akademik \\
+REFIT (UK) & 20 ev, alet seviyesi, EV yok & Akademik \\
+GREEND (AT/IT) & 8 ev & Akademik \\
+ChargeCar (CMU) & EV sürüş profilleri (şarj yok) & Akademik \\
+OpenChargeMap & Şarj noktası lokasyonları (yük yok) & Açık \\
+NREL EV Charging Data & ABD CPO verileri (anonim) & Açık \\
+\bottomrule
+\end{tabularx}
+
+\textbf{Pratik:} Public veri Türkiye gerçeği için \textbf{yetersiz}. Strateji:
+\begin{enumerate}
+    \item \textbf{Pre-training:} Public veride güçlü bir \textit{baseline forecaster} yetiştir (özellikle EPİAŞ saatlik TR ulusal tüketim).
+    \item \textbf{Pilot toplama:} İlk friendly pilotta 3 ay boyunca dakikalık veri biriktir (akıllı sayaç).
+    \item \textbf{Fine-tuning:} Her saha için son N hafta veriyle modeli site-specific yap (transfer learning).
+    \item \textbf{Online learning:} Üretimde günlük kayan pencerede yeniden eğit (retrain weekly).
+\end{enumerate}
+
+\subsubsection{Model Seçimi (Aşamalı)}
+
+\begin{tabularx}{\textwidth}{l l l X}
+\toprule
+\textbf{Aşama} & \textbf{Model} & \textbf{Tahmin Ufku} & \textbf{Not} \\
+\midrule
+V1 (Hafta 1-2) & Naive: ``geçen haftanın aynı saati'' & 1-24 sa & Baseline; akıllıca tasarlanırsa şaşırtıcı iyi. \\
+V1 (Hafta 3-4) & SARIMA / Prophet & 1-24 sa & Açıklanabilir, kurumsal müşteri sever. \\
+V2 (Ay 2-4) & XGBoost / LightGBM (lag features + takvim + hava) & 1-24 sa & Ana iş yükü modeli; üretim baseline. \\
+V3 (Ay 4-7) & LSTM / GRU & 1-72 sa & Daha uzun ufuk; karmaşıklık artar. \\
+V4 (Ay 7+) & Temporal Fusion Transformer (TFT) / NeuralProphet / Chronos (Amazon) & 1-168 sa & State-of-the-art; yatırımcı toplantısında parlatıcı. \\
+\bottomrule
+\end{tabularx}
+
+\textbf{Tavsiye:} V2 (XGBoost) üretime ilk koy. V3/V4 araştırma + diferansiyatör. Kurumsal müşteri ``Transformer'' kelimesini sever ama gerçekte XGBoost yeterince iyidir.
+
+\subsubsection{Feature Engineering — Önemli Özellikler}
+
+\begin{itemize}
+    \item \textbf{Zaman:} hour-of-day, day-of-week, day-of-month, month, is\_weekend, is\_holiday (TR resmi tatil).
+    \item \textbf{Lag:} t-1h, t-24h, t-168h (geçen hafta aynı saat). Mavi-altın bilgi.
+    \item \textbf{Rolling stats:} son 1h/24h/7d ortalama, std.
+    \item \textbf{Hava:} sıcaklık, nem, ışık (MGM açık API), tahmin (OpenWeather).
+    \item \textbf{Takvim:} okul tatili, ramazan/bayram (AVM yükü değişir), maç günü (otopark dolar).
+    \item \textbf{Yerel olay:} mağaza açılış/kapanış, bina işletmesi vardiyaları.
+    \item \textbf{EV özel:} son 24 saatte gelen araç sayısı (otokorelasyon güçlü).
+\end{itemize}
+
+\subsubsection{Validasyon \& Metrik}
+\begin{itemize}
+    \item Walk-forward CV (zaman serileri için zorunlu, KFold yanıltıcı).
+    \item Metrik: MAE (kW), MAPE (\%), RMSE.
+    \item Pinball loss --- quantile forecasting (P10/P50/P90) için. Karar verme uncertainty-aware olur.
+    \item Kabul kriteri pilotta: 1-saat-ileri MAPE $<$\%10, 24-saat-ileri MAPE $<$\%18.
+\end{itemize}
+
+\subsubsection{Süre \& Sahip}
+\textbf{Sprint:} V1 baseline (2 hafta), V2 XGBoost (3 hafta), V3 LSTM (4 hafta + araştırma payı). \textbf{Sahip:} CTO/Algoritma birincil; akademik partner (İTÜ EE / ODTÜ EE) tez/intern desteği.
+
+% -------------------------------------------------------------------
+\subsection{Modül E — Optimizasyon Algoritması (Karar)}
+
+\subsubsection{Mevcut Durum}
+\texttt{simulation\_v3.py} 5 algoritma:
+\begin{itemize}
+    \item \textbf{UnmanagedController} --- baseline (yalın).
+    \item \textbf{ManagedController} --- starvation + bitiş yakınlığı priorite.
+    \item \textbf{SRPTController} --- en az kalan iş süresi.
+    \item \textbf{WaterFillingController} --- adil paylaşım.
+    \item \textbf{DynamicFairController} --- ağırlıklı urgency.
+\end{itemize}
+Hepsi \textbf{greedy / heuristik}. Anlık karar, ileriyi görmüyor.
+
+\subsubsection{Eklenecek (Faz 2-3)}
+
+\textbf{1. Rolling Horizon MILP/QP optimizasyonu:}
+\begin{itemize}
+    \item Karar değişkeni: $P_{i,t}$ — araç $i$, dakika $t$ gücü.
+    \item Kısıt:
+        \begin{itemize}
+            \item $P_{i,t} \le P_{i,\max}$ (charger × araç limiti).
+            \item $\sum_i P_{i,t} + B_t \le L_t$ (toplam ≤ trafo limiti, $B$ baz yük tahmini, $L$ trafo).
+            \item $\sum_t P_{i,t} \cdot \Delta t \ge E_i$ (her araç enerjisini al).
+        \end{itemize}
+    \item Hedef: $\min \sum_t c_t \cdot \big(\sum_i P_{i,t} + B_t\big) + \lambda \sum_i \text{wait}_i$ (maliyet + bekleme cezası).
+    \item Çözücü: CVXPY (Python, açık), OR-Tools (Google), Gurobi (lisans gerekli, hızlı).
+    \item Ufuk: 4--12 saat ileri, her 5--15 dakikada yeniden çöz.
+\end{itemize}
+
+\textbf{2. Stokastik / Robust Optimizasyon:}
+\begin{itemize}
+    \item Tahmin belirsizliği var (P10/P90).
+    \item Scenario-based stochastic LP: birkaç ``senaryo'' örnekle, her birini optimize et, beklenen değeri minimize et.
+    \item Daha güvenli ama daha pahalı; faz 3.
+\end{itemize}
+
+\textbf{3. Reinforcement Learning (Faz 4 araştırma):}
+\begin{itemize}
+    \item Sim ortamı zaten var (\texttt{simulation\_v3.py}). PPO/SAC ajanı eğit.
+    \item Avantaj: implicit objective öğrenimi.
+    \item Dezavantaj: kara kutu — kurumsal müşteri sevmez.
+    \item Akademik ortaklıkla (TÜBİTAK 1505 ARDEB) tez konusu.
+\end{itemize}
+
+\subsubsection{Süre \& Sahip}
+MILP rolling horizon: 6 hafta. Stokastik: ek 4 hafta. RL: araştırma — 6+ ay. \textbf{Sahip:} CTO/Algoritma.
+
+% -------------------------------------------------------------------
+\subsection{Modül F — Güç Kalitesi \& Harmonik (Faz 4 Diferansiyatör)}
+
+\subsubsection{Neden Önemli}
+
+DC hızlı şarj cihazları \textbf{ciddi harmonik üretir} (özellikle eski 6-pulse rectifier'lı modeller). Saha trafosu / sayacı bunu görür ve:
+\begin{itemize}
+    \item DSO (BEDAŞ) reaktif/harmonik cezası kesebilir (IEEE 519 TR uyarlaması).
+    \item Trafo gerçek yükü (THD dahil) görünür yükten yüksektir → anlık aşım.
+    \item Diğer cihazlara zarar verebilir (motor, kompresör).
+\end{itemize}
+
+\textbf{Ticari fırsat:} ``Sadece güç limiti değil, harmonik-aware load balancing yapıyoruz'' demek diferansiyatör.
+
+\subsubsection{Standartlar}
+
+\begin{itemize}
+    \item \textbf{IEEE 519-2014} --- harmonic limits (THD\_V, THD\_I limitleri).
+    \item \textbf{IEC 61000-3-12} --- 16--75 A cihaz harmonik.
+    \item \textbf{IEC 61000-4-7} --- ölçüm yöntemi.
+    \item \textbf{TS EN 50160} --- şebeke gerilim kalitesi (TR).
+\end{itemize}
+
+\subsubsection{Donanım}
+
+\begin{itemize}
+    \item \textbf{Power Quality Analyzer} --- Janitza UMG 605 (Modbus + harmonic up to 50.), Fluke 437-II (lab).
+    \item \textbf{Akım trafoları (CT)} --- Saha çıkışı + her charger besleme hattı için.
+    \item \textbf{Veri yolu:} Modbus TCP $\rightarrow$ kendi gateway $\rightarrow$ MQTT.
+\end{itemize}
+
+\subsubsection{Yazılım}
+
+\begin{itemize}
+    \item Anlık FFT analizi --- gerek var mı? Hayır, Janitza zaten FFT yapar; biz harmonik ölçümleri okuruz.
+    \item Algoritma: ``charger önceliklendirmede THD'yi de objective'e ekle''. Mevcut algoritmaya ek skor.
+    \item Alarm: THD\_V $>$ \%5 → otomatik kısma.
+\end{itemize}
+
+\subsubsection{Süre \& Sahip}
+\textbf{Faz 4 araştırma — Ay 9+.} 6 hafta. \textbf{Sahip:} Embedded + akademik partner (İTÜ Güç Sistemleri, Yıldız EE).
+
+\begin{notebox}
+\textbf{Stratejik not:} Harmonik analizini Faz 1--2'de yapma, ama \textbf{satış pitch'inde bahsediyoruz} ki ``ürün yol haritamızda var, bizden bunu istersen yapacağız.'' Yatırımcı / büyük kurumsal müşteri için diferansiyatör.
+\end{notebox}
+
+% -------------------------------------------------------------------
+\subsection{Modül G — Bulut Mimarisi (Multi-tenant SaaS)}
+
+\subsubsection{Mevcut → Hedef}
+
+\textbf{Mevcut:} \texttt{python simulation\_v3.py} → 1 makine, 1 senaryo.
+
+\textbf{Hedef:} N müşteri × M saha × K charger × T zaman = bulut tabanlı multi-tenant SaaS.
+
+\subsubsection{Mimari Katmanlar}
+
+\begin{lstlisting}[basicstyle=\small\ttfamily, frame=single]
+┌─────────────────────────────────────────────────────┐
+│ Web Dashboard (Next.js, Vercel)                     │
+│ Mobile (React Native, opsiyonel — Faz 3)            │
+├─────────────────────────────────────────────────────┤
+│ API Gateway (Kong/Traefik) + WAF                    │
+│   - REST/GraphQL                                    │
+│   - Rate limit, auth (Auth0 / Keycloak)             │
+├─────────────────────────────────────────────────────┤
+│ Application Servers (FastAPI)                       │
+│   - Tenant/Site/Charger CRUD                        │
+│   - Algoritma çekirdeği (simulation_v3 → port)     │
+│   - Tariff/ROI servisi                              │
+├─────────────────────────────────────────────────────┤
+│ OCPP Gateway (Python, mobilityhouse/ocpp)           │
+│   - WebSocket connection per charger               │
+│   - Telemetry → Kafka                              │
+│   - Command (SetChargingProfile) ← API              │
+├─────────────────────────────────────────────────────┤
+│ Real-time Optimization Worker                       │
+│   - Her saha için ayrı container                    │
+│   - 30 sn / 1 dk cycle: forecast → optimize → push │
+├─────────────────────────────────────────────────────┤
+│ ML Inference Service (load forecast)                │
+│   - FastAPI + ONNX runtime / TF Serving             │
+├─────────────────────────────────────────────────────┤
+│ Streaming (Kafka / NATS) — telemetry pipeline       │
+│ TimescaleDB (zaman serisi)                          │
+│ PostgreSQL (durum, kullanıcı, tenant)               │
+│ Redis (cache, distributed lock)                     │
+│ S3-compatible object store (rapor, ML artifacts)    │
+├─────────────────────────────────────────────────────┤
+│ Observability: Grafana + Prometheus + Loki          │
+│ Errors: Sentry                                      │
+│ Logs: ELK / Loki                                    │
+└─────────────────────────────────────────────────────┘
+\end{lstlisting}
+
+\subsubsection{Cloud Provider Kararı}
+
+\begin{tabularx}{\textwidth}{l X X}
+\toprule
+\textbf{Sağlayıcı} & \textbf{Avantaj} & \textbf{Dezavantaj} \\
+\midrule
+AWS (Frankfurt) & Olgun, geniş hizmet, KVKK uyumlu (DPA imzalanır) & Maliyet (TL düşüşünde acı) \\
+Google Cloud (Frankfurt) & İyi ML/AI servisleri & TR pazarda az tanınır \\
+Azure (Frankfurt) & Kurumsal müşteri sever & Maliyet \\
+Turkcell BulutTürk & Yerli, KVKK kolay, kamu satışında avantaj & Hizmet derinliği daha az \\
+Türk Telekom Bulut & Yerli + KOBİ desteği & ML kit yok \\
+\bottomrule
+\end{tabularx}
+
+\textbf{Tavsiye:} Faz 1--2'de \textbf{Hetzner Cloud (Almanya, ucuz)} + \textbf{Cloudflare (CDN/WAF)}. Maliyet kontrolü için. Faz 3'te kurumsal/devlet için \textbf{Turkcell BulutTürk}'e migration opsiyonu.
+
+\subsubsection{Multi-tenancy Yaklaşımı}
+\begin{itemize}
+    \item \textbf{Schema-per-tenant} (Postgres). Çoğu kurumsal müşteri ``benim verim ayrı'' diye ısrarcı; bu mimari karar onu çözer.
+    \item Row-level security (RLS) ile tek-DB yaklaşımı erken evrede daha hızlı; faz 2'de schema-per-tenant'a geç.
+\end{itemize}
+
+\subsubsection{Süre \& Sahip}
+\textbf{V1 MVP backend:} 4 hafta (CTO + Embedded). \textbf{V2 prod-ready:} +8 hafta. \textbf{Sahip:} CTO birincil.
+
+% -------------------------------------------------------------------
+\subsection{Modül H — Güvenlik \& Uyum}
+
+\subsubsection{Boyutlar}
+
+\begin{tabularx}{\textwidth}{l X}
+\toprule
+\textbf{Boyut} & \textbf{Aksiyon} \\
+\midrule
+TLS / Şifreleme & Tüm OCPP bağlantısı WSS (TLS 1.2+); cert-manager + Let's Encrypt. \\
+Auth & OAuth2 + JWT; refresh token; MFA (TOTP) admin için. \\
+KVKK & Aydınlatma metni, VERBİS sicili, ROPA, veri saklama politikası, silme talebi akışı. \\
+ISO 27001 & Faz 2 sonu hedef. Asistan: 6 ay süre, dış denetim. \\
+IEC 62443 & Endüstriyel kontrol güvenliği — kurumsal müşteri sorabilir. Faz 3. \\
+Penetration test & Yılda 1 kez (3rd party). PreSeed sonrası gerçekçi. \\
+Secrets mgmt & HashiCorp Vault veya cloud KMS; environment varlığında düz parola \textbf{yok}. \\
+RBAC & Kullanıcı: admin, operatör, salt-okuyan. Tenant izolasyonu. \\
+Audit log & Tüm yazma işlemi loglanır, 1 yıl saklanır. \\
+\bottomrule
+\end{tabularx}
+
+\subsubsection{KVKK Detayı (atlanırsa cezası ağır)}
+
+\begin{itemize}
+    \item Şarj seansı = kişisel veri (kullanıcı RFID/araç plaka eşleşmesi).
+    \item \textbf{Veri Sorumlusu sicili (VERBİS)} kayıt zorunlu (yıllık ciro 25M TL üzerinde olsun olmasın, 50+ çalışan üzerinde olmasın gerek yok ama 100 müşteri verisi varsa kaydet).
+    \item \textbf{Aydınlatma metni} her müşteri sözleşmesinde ek olmalı.
+    \item \textbf{ROPA (Veri İşleme Faaliyetleri Kaydı)} — iç dosya, denetimde sorulur.
+    \item \textbf{Veri ihlali bildirimi} 72 saat içinde KVKK Kurulu'na.
+    \item \textbf{Yurt dışı aktarım} (AWS Frankfurt) — DPA imzala, açık rıza al veya KVKK'nın belirlediği uygun ülke listesine uy.
+\end{itemize}
+
+\subsubsection{Süre \& Sahip}
+KVKK uyum: 2 hafta + yıllık güncelleme. ISO 27001: 6 ay (faz 2). Pentest: yılda 1 (50--150K TL dış maliyet). \textbf{Sahip:} CEO/Operasyon (hukuk dış kaynak).
+
+% -------------------------------------------------------------------
+\subsection{Modül I — PV / ESS Entegrasyonu (Faz 3 Diferansiyatör)}
+
+\subsubsection{Niye Önemli}
+Saha sahibi çatıya PV koyduysa veya batarya BESS aldıysa, ``EV şarjını PV'den karşıla, fazlası varsa şebekeye sat, eksiği batarya'dan al'' bir gold mine. Türkiye'de:
+\begin{itemize}
+    \item Çatı GES (lisanssız) yaygınlaştı, AVM/fabrika çatıları doluyor.
+    \item BESS (Tesla Megapack, BYD, Sungrow) henüz pahalı ama 2026--2027 cazip olacak.
+    \item EPDK BESS yönetmeliği (2023) yayımlandı; \textbf{aggregator} olabilir.
+\end{itemize}
+
+\subsubsection{Algoritma Genişlemesi}
+
+Bizim yük dengeleme algoritmamızın objective'ine 3 yeni terim ekle:
+\begin{enumerate}
+    \item \textbf{PV self-consumption} maksimize et (PV anlık $\rightarrow$ EV).
+    \item \textbf{BESS scheduling} --- gece ucuz tarifede şarj et, puantta deşarj.
+    \item \textbf{Şebeke export} --- YEKDEM dışı satış (sınırlı, AB modelinde değil).
+\end{enumerate}
+
+\subsubsection{Süre \& Sahip}
+Faz 3, Ay 8+. 6--8 hafta. \textbf{Sahip:} CTO + akademik partner.
+
+% -------------------------------------------------------------------
+\subsection{Modül J — V2G \& V2H (Faz 4)}
+
+V2G (Vehicle-to-Grid) — aracın bataryasından şebekeye / binaya geri elektrik akışı. Türkiye'de:
+\begin{itemize}
+    \item Henüz yaygın değil.
+    \item TOGG T10X V2L (vehicle-to-load) yapabilir, V2G şu an yok.
+    \item ISO 15118-20 + CCS2 ile teorik mümkün.
+    \item Bizim için 12--18 ayda \textbf{pitch maddesi}, ürün maddesi değil.
+\end{itemize}
+\textbf{Tavsiye:} Mimaride ``hazır'' yap (bidirectional power flow desteği), gerçek implementasyon Faz 4 sonrası.
+
+% -------------------------------------------------------------------
+\subsection{Modül K — Müşteri Arayüzleri}
+
+\subsubsection{Operatör Dashboard (web)}
+
+Kim kullanır: AVM teknik müdürü, lojistik filo amiri, otel facility manager.
+
+Ana ekranlar:
+\begin{itemize}
+    \item \textbf{Anlık durum:} saha güç (kW), trafo limiti, charger durumu (gantt-vari).
+    \item \textbf{Tahmin:} sonraki 24 saat baz yük + tahmini EV gelişi.
+    \item \textbf{Olay/Alarm:} aşım, charger arıza, OCPP kopması.
+    \item \textbf{Rapor:} aylık tasarruf, fatura öncesi/sonrası, charger başına servis.
+    \item \textbf{Konfigürasyon:} algoritma seçimi, priorite kuralları, alarm eşikleri.
+\end{itemize}
+
+\subsubsection{Saha Mobile (Faz 3 sonra)}
+Sürücü için: rezervasyon, durum, ödeme. \textbf{Şu an gerek yok} — Voltrun/ZES uygulamaları zaten var, biz onların altında çalışırız.
+
+\subsubsection{API}
+Üçüncü parti integrasyon (CPO platformları, BMS sistemleri, Energy Management Systems). REST + Webhook.
+
+\subsubsection{Süre \& Sahip}
+Operatör dashboard MVP: 4 hafta (CEO/Operasyon + frontend hire/freelancer). Mobile: Faz 3.
+
+% -------------------------------------------------------------------
+\subsection{Modül L — Faturalama / Ödeme}
+
+\subsubsection{Soru: Müşteriden nasıl para alacağız?}
+
+\textbf{Bizim model SaaS:}
+\begin{itemize}
+    \item Setup fee (30--80K TL): banka havalesi, e-fatura.
+    \item Aylık SaaS (charger × ay × birim fiyat): otomatik fatura, vade 30 gün.
+    \item Sözleşme: KKTC/TR muhasebe, e-fatura/e-arşiv (GİB).
+\end{itemize}
+
+\textbf{Saha sahibi araç sürücüsünden nasıl alacak?} Bizim sorunumuz değil ama mimari etki var:
+\begin{itemize}
+    \item Eğer saha bir RFID/QR sistemi kullanıyorsa, biz \texttt{user\_id}'yi seans kaydında tutarız.
+    \item Saha CPO'ya bağlıysa (Voltrun gibi), CPO'nun billing'i kendi yapar; biz onun altyapısıyız.
+\end{itemize}
+
+\subsubsection{Faturalama Yazılımı (Bizim için)}
+\begin{itemize}
+    \item Logo / Mikro / Paraşüt — küçük şirket için yeterli.
+    \item Stripe Türkiye ya da iyzico — kart ödeme (gelecek).
+    \item TR e-fatura entegrasyonu zorunlu (müşteri ciro $>$ 5M TL).
+\end{itemize}
+
+% -------------------------------------------------------------------
+\subsection{Modül M — Atlanmış / Daha Az Konuşulmuş 25 Konu}
+
+\begin{enumerate}
+    \item \textbf{Batarya degradasyonu} --- yüksek hızlı (HPC) şarj batarya ömrünü azaltır. Müşteriye söylenecek bir trade-off; ``adil'' algoritma slow-charge'ı tercih edebilir. Akademik makale potansiyeli.
+    \item \textbf{SLA tanımı} --- kurumsal müşteri ``\%99.5 uptime garantisi'' ister. Cezası kontratta. Mimari etkiler bunun üzerine kurulur.
+    \item \textbf{Disaster Recovery (DR) / Backup site} --- Türkiye'de deprem riski; AB region (Frankfurt) hot standby. Faz 2 sonu.
+    \item \textbf{Charger Firmware Update Yönetimi} --- OCPP üzerinden firmware push. \texttt{UpdateFirmware} mesajı. Saha-saha firmware versiyon takibi şart.
+    \item \textbf{Data Governance / Veri Sahipliği} --- ``müşteri veri sahibi, biz veri işleyen''. Sözleşmede netleştir. Anonimleştirilmiş istatistik için ek lisans.
+    \item \textbf{Anomaly Detection} --- charger sahteciliği, RFID kötüye kullanım, fraud. Faz 2.
+    \item \textbf{Logging \& Observability} --- prod'da Grafana panel, alarm. SLO/SLI tanımları.
+    \item \textbf{Multi-language UI} --- TR ana, EN second. MENA için Arapça orta vade. i18n stack erkenden kur.
+    \item \textbf{Edge computing} --- bazı sahalar (ADM, hastane) ``veri dışarı çıkmasın'' der. On-prem bir node opsiyonu lazım. Faz 3.
+    \item \textbf{Şarj Cihazı Offline Davranışı} --- internet kopunca charger ne yapar? OCPP 1.6 \texttt{LocalAuthList} ve \texttt{ChargingProfilesPersistent} ile graceful degradation. Müşteriye anlatılması gereken.
+    \item \textbf{Sözleşme Şablonları} --- pilot, ticari, OEM ortak. Hukuki danışman ile (Esin Avukatlık veya Pekin Bayar Türkiye) standartlaştır.
+    \item \textbf{Patent Stratejisi} --- TR/EPO algoritma patenti zor; ama \textit{trade secret} + müşteri sözleşmesinde IP koruma. Belki ``yöntem patenti'' ABD'de mümkün.
+    \item \textbf{Marka / Domain / Trademark} --- isim seç, .com + .com.tr al, TPMK marka başvurusu (3K TL, 6 ay).
+    \item \textbf{Sektör Konferansları} --- ICCI (Mart, İstanbul), Solarex (Nisan, İstanbul), EVER Monaco, ChargeIN Europe. Demo standı.
+    \item \textbf{Sektör Dergileri / PR} --- Enerji Dergisi, Elektrik Mühendisliği. Düzenli yazı + case study yayını = inbound lead.
+    \item \textbf{Akademik Yayın} --- IEEE Trans. Smart Grid, Applied Energy. Diferansiyel olur, yatırımcı sever.
+    \item \textbf{Open-source Stratejisi} --- OCPP gateway'i open source yap (Apache 2.0). Algoritma core'u kapalı. Developer mindshare.
+    \item \textbf{Müşteri Başarı (Customer Success)} --- pilot başına dedicated CSM (Customer Success Manager). Faz 2 hire.
+    \item \textbf{Sigorta} --- kurumsal müşteri ``Cyber Liability Insurance + Professional Indemnity'' ister. AXA, Allianz, Türkiye'de Anadolu Sigorta.
+    \item \textbf{ISO 9001 (Kalite)} --- devlet ihalesinde sorulur. Faz 3 nice-to-have.
+    \item \textbf{ISO 14001 (Çevre)} --- yine devlet ihalesinde. Faz 3.
+    \item \textbf{TS 13298 / e-İmza / KEP} --- kurumsal müşteri sözleşmelerinde KEP. Erkenden al (Türk Telekom, E-Güven).
+    \item \textbf{Talep Yanıtı (Demand Response)} --- Türkiye'de henüz EPİAŞ üzerinden bireysel saha katılımı sınırlı. Aggregator rolü Faz 3.
+    \item \textbf{Yedek Şirket Yapısı} --- TR Ltd Şti + Estonya OÜ (e-Residency) iki katmanlı yapı; fonlama ve uluslararası satış için kolaylık. Hukuki danışman gerekli.
+    \item \textbf{Founder vesting + ESOP havuzu} --- ESOP \%10--15 erken evrede, ileride hire için kritik. Founders' Agreement gün 1.
+\end{enumerate}
+
+% ===================================================================
+\section{Veri Stratejisi (Detay)}
+
+\subsection{İhtiyacımız Olan Veriler}
+
+\begin{tabularx}{\textwidth}{l X l}
+\toprule
+\textbf{Veri} & \textbf{Niye} & \textbf{Kaynak} \\
+\midrule
+Saha toplam yük (1-dk) & Tahmin modeli, anlık karar & Akıllı sayaç (saha çıkışı) \\
+Charger telemetri (1-sn / 1-dk) & Anlık güç, transaction & OCPP MeterValues \\
+EV bilgisi (model, batarya, SoC) & SoC kestirimi & OCPP TransactionEvent + 15118 \\
+Tarife verisi (saatlik) & Maliyet hesabı, optimizasyon & EPDK + EPİAŞ \\
+Hava verisi (saatlik) & Yük tahmini özniteliği & MGM açık API, OpenWeather \\
+Takvim (TR tatil) & Yük tahmini & Statik tablo + ramazan/bayram lib \\
+Ulusal saatlik tüketim & Pre-training prior & EPİAŞ Şeffaflık \\
+Yerel olay (maç, tatil) & İleri yük tahmini & Manuel etiketleme + scrape \\
+\bottomrule
+\end{tabularx}
+
+\subsection{Pilot Veri Toplama Planı}
+
+\begin{enumerate}
+    \item Pilot başında saha çıkışına Janitza UMG kur (4 hafta lab + saha kurulum).
+    \item İlk 4 hafta sadece ``shadow mode'' --- kontrol etme, sadece veri biriktir.
+    \item 4--8 hafta: yük tahmini eğit (200K+ örnek).
+    \item 8--16 hafta: kontrol modu aç, A/B test (yarısı müdahalesiz, yarısı algoritma).
+\end{enumerate}
+
+\subsection{Veri Yönetişimi}
+
+\begin{itemize}
+    \item Müşteri veri sahibi; biz veri işleyen.
+    \item Anonimleştirilmiş aggregate veri için açık rıza (sözleşmede checkbox).
+    \item Veri saklama: 24 ay default, müşteri talebi ile silme.
+    \item Bulut: AWS Frankfurt + DPA imzası.
+\end{itemize}
+
+% ===================================================================
+\section{Mimari Evrim --- Sürüm Yol Haritası}
+
+\begin{tabularx}{\textwidth}{l l X}
+\toprule
+\textbf{Sürüm} & \textbf{Hedef} & \textbf{Ana içerik} \\
+\midrule
+V0 (mevcut) & Lab POC & \texttt{simulation\_v3.py} mono-script. \\
+V1 (Ay 2--4) & MVP & FastAPI backend + 1 charger OCPP entegrasyonu + read-only dashboard + sentetik veri. \\
+V2 (Ay 4--6) & Pilot-ready & Multi-tenant, gerçek tarife, ML baseline (XGBoost), tahmin + karar entegre, friendly pilot canlı. \\
+V3 (Ay 6--9) & Ücretli pilot & 3--5 saha, Grafana izleme, KVKK/güvenlik full, alarm/uyarı, müşteri raporu. \\
+V4 (Ay 9--12) & Scale-ready & DR, multi-region, OCPP 2.0.1, demand response sinyali, PV/ESS proto. \\
+V5 (Ay 12+) & Diferansiyatör & Harmonik analiz, V2G hazır, RL araştırma. \\
+\bottomrule
+\end{tabularx}
+
+% ===================================================================
+\section{12 Aylık Birleşik Sprint Planı (Hafta Hafta)}
+
+\textbf{Notasyon:} {\color{blue!50!black}T} = Teknik, {\color{red!50!black}İ} = İdari/İş, {\color{green!50!black}P} = Pazarlama/Satış.
+
+\subsection*{Ay 1 — Validasyon \& Hazırlık}
+
+\textbf{Hafta 1:}
+\begin{itemize}
+    \item {\color{red!50!black}İ} Founders' Agreement, vesting, ESOP havuzu, şirket türü kararı.
+    \item {\color{red!50!black}İ} Domain + Linkedin + e-posta + GitHub org.
+    \item {\color{red!50!black}İ} Hukuki danışman ilk toplantı (KVKK + EPDK + sözleşme şablonları).
+    \item {\color{green!50!black}P} 30 müşteri görüşme listesi, outreach mesajları.
+\end{itemize}
+
+\textbf{Hafta 2--3:}
+\begin{itemize}
+    \item {\color{green!50!black}P} 30 customer discovery (3 kurucu × 10).
+    \item {\color{blue!50!black}T} OCPP 1.6 spec oku; mobilityhouse/ocpp lokal kur.
+    \item {\color{red!50!black}İ} TÜBİTAK 1512 BiGG başvuru paketi başla.
+\end{itemize}
+
+\textbf{Hafta 4:}
+\begin{itemize}
+    \item {\color{green!50!black}P} Pain matrisi, 3 LOI hedef.
+    \item {\color{blue!50!black}T} Lab simülasyonda 5 sahte charger ile CSMS bağlantısı.
+    \item {\color{red!50!black}İ} BiGG son kontrol + başvur.
+\end{itemize}
+
+\subsection*{Ay 2 — Donanım Lab + V1 Backend}
+
+\textbf{Hafta 5:}
+\begin{itemize}
+    \item {\color{blue!50!black}T} Vestel Bonus DC sipariş (3--6 hafta termin), Janitza UMG sipariş.
+    \item {\color{blue!50!black}T} FastAPI proje skeleton + Postgres + Redis. Tenant/Site/Charger CRUD.
+    \item {\color{blue!50!black}T} \texttt{simulation\_v3.py} algoritmalarını \texttt{evlb/algorithms/} paketi olarak refactor (production reuse).
+\end{itemize}
+
+\textbf{Hafta 6--7:}
+\begin{itemize}
+    \item {\color{blue!50!black}T} OCPP gateway (mobilityhouse/ocpp) entegre. WSS endpoint.
+    \item {\color{blue!50!black}T} Telemetry → TimescaleDB.
+    \item {\color{blue!50!black}T} Tarife modülü (Modül A) — Türkiye TEDAŞ tarife jsonu.
+    \item {\color{green!50!black}P} 2 friendly pilot LOI imza.
+\end{itemize}
+
+\textbf{Hafta 8:}
+\begin{itemize}
+    \item {\color{blue!50!black}T} Lab kurulumu: Vestel Bonus + Janitza + IoT gateway.
+    \item {\color{blue!50!black}T} İlk gerçek charger \texttt{BootNotification} alındı --- şampanya patlat.
+\end{itemize}
+
+\subsection*{Ay 3 — Smart Charging + ROI Modülü}
+
+\textbf{Hafta 9--10:}
+\begin{itemize}
+    \item {\color{blue!50!black}T} \texttt{SetChargingProfile} ile statik limit gönder. Doğrulama.
+    \item {\color{blue!50!black}T} ROI calculator — pilot teklifi için canlı.
+    \item {\color{green!50!black}P} İlk friendly pilot saha kurulum (sözleşme imza).
+\end{itemize}
+
+\textbf{Hafta 11--12:}
+\begin{itemize}
+    \item {\color{blue!50!black}T} DynamicFairController production-ready (1-dk cycle).
+    \item {\color{blue!50!black}T} Dashboard read-only — anlık güç + transaction listesi.
+    \item {\color{red!50!black}İ} TÜBİTAK BiGG kabul/red bilgisi (ortalama 3 ay süre).
+\end{itemize}
+
+\subsection*{Ay 4 — Pilot Canlı + ML Baseline}
+
+\begin{itemize}
+    \item {\color{blue!50!black}T} İlk friendly pilot ``shadow mode'' (sadece veri toplama).
+    \item {\color{blue!50!black}T} XGBoost yük tahmini baseline. Walk-forward validation.
+    \item {\color{blue!50!black}T} Algoritma + tahmin entegrasyon: rolling 1-saat tahmin → karar.
+    \item {\color{red!50!black}İ} 1. yasal tarama: KVKK aydınlatma metni canlı.
+    \item {\color{green!50!black}P} 2 ücretli pilot ön görüşme.
+\end{itemize}
+
+\subsection*{Ay 5 — Pilot Optimizasyonu + Pre-Seed Hazırlık}
+
+\begin{itemize}
+    \item {\color{blue!50!black}T} Pilot ``control mode'' aç. A/B test.
+    \item {\color{blue!50!black}T} İlk ``öncesi/sonrası'' raporu çıkar (1 ay veri).
+    \item {\color{red!50!black}İ} Pre-seed pitch deck. Finansal model (3 yıllık).
+    \item {\color{green!50!black}P} Galata Business Angels, ScaleX, KEIRETSU İstanbul ile 5--10 toplantı.
+\end{itemize}
+
+\subsection*{Ay 6 — İlk Ücretli Müşteri + Pre-Seed Sözleşme}
+
+\begin{itemize}
+    \item {\color{green!50!black}P} İlk ücretli pilot sözleşmesi imza (Setup fee + 6 ay SaaS).
+    \item {\color{red!50!black}İ} Pre-seed kapanış görüşmeleri --- 3--8M TL hedef.
+    \item {\color{blue!50!black}T} Multi-tenant hardening (RLS, tenant izolasyonu).
+    \item {\color{blue!50!black}T} OCPP tarafında 3+ farklı charger üretici testi (ABB, Phihong, Schneider).
+\end{itemize}
+
+\subsection*{Ay 7--8 — Pre-Seed Kapandı + Ekip Büyüme}
+
+\begin{itemize}
+    \item {\color{red!50!black}İ} Pre-seed para hesapta. Şirketleşme (Ltd Şti $\rightarrow$ A.Ş. üzerine düşün).
+    \item {\color{red!50!black}İ} Hire: 1 backend dev, 1 frontend dev, 1 sales dev rep (SDR).
+    \item {\color{blue!50!black}T} 2--3 ücretli pilot canlı. CS workflow oturmuş.
+    \item {\color{blue!50!black}T} V3 sürüm: alarm, rapor otomatik, KVKK ROPA, ISO 27001 başlangıcı.
+    \item {\color{green!50!black}P} 5--10 yeni outbound müşteri görüşmesi.
+\end{itemize}
+
+\subsection*{Ay 9--10 — Ölçeklendirme + Demand Response}
+
+\begin{itemize}
+    \item {\color{blue!50!black}T} OCPP 2.0.1 desteği başla.
+    \item {\color{blue!50!black}T} Demand response prototipi --- BEDAŞ pilot için hazırlık.
+    \item {\color{blue!50!black}T} LSTM tahmin V3 araştırma. Akademik partner imza.
+    \item {\color{green!50!black}P} 5+ ödeyen müşteri.
+    \item {\color{red!50!black}İ} TÜBİTAK 1507 KOBİ Ar-Ge başvuru.
+\end{itemize}
+
+\subsection*{Ay 11--12 — Seed Hazırlık + Diferansiyatör}
+
+\begin{itemize}
+    \item {\color{red!50!black}İ} Seed pitch deck v2. Yatırımcı listesi (212, Re-Pie, Earlybird, Diffusion, Speedinvest).
+    \item {\color{blue!50!black}T} PV/ESS proto demo (1 saha PV + sim BESS).
+    \item {\color{blue!50!black}T} Harmonic analiz proto demo (Janitza verileri).
+    \item {\color{blue!50!black}T} V4 Mimari: multi-region DR, KKTC saha denemesi.
+    \item {\color{green!50!black}P} 8--12 ödeyen müşteri, 1--2.5M TL ARR.
+\end{itemize}
+
+% ===================================================================
+\section{Donanım Gereksinimleri}
+
+\subsection{Lab Kurulumu (1 kez, Faz 1)}
+
+\begin{tabularx}{\textwidth}{l X r}
+\toprule
+\textbf{Ekipman} & \textbf{Açıklama} & \textbf{Yaklaşık Maliyet (TL)} \\
+\midrule
+Vestel Bonus DC60 & Test charger (60 kW) & 250.000 \\
+veya 2. el ABB Terra HPC & 2nd hand 50 kW & 150.000 \\
+Test bataryası / EV emülatör & Charger çıkış yüklemek için & 80.000 (kira: 5K/ay) \\
+Janitza UMG 605 & Power Quality Analyzer & 35.000 \\
+Endüstriyel switch & MOXA EDS-405A & 5.000 \\
+IoT Gateway & Siemens IOT2050 / Raspberry Pi 4 & 4.000 \\
+Akım trafosu (CT) seti & Saha çıkışı + her charger & 6.000 \\
+Pano malzeme & Sigorta, kablaj, montaj & 10.000 \\
+Switching işçilik & Elektrikçi & 15.000 \\
+\midrule
+\textbf{Toplam (orta tahmin)} & & \textbf{$\sim$310.000} \\
+\textbf{Toplam (kira-tabanlı minimum)} & & \textbf{$\sim$80.000 + 5K/ay} \\
+\bottomrule
+\end{tabularx}
+
+\textbf{Tavsiye:} Vestel Bonus'u sıfır almak yerine \textbf{Vestel ile ``demo birim ödünç''} müzakeresi yap. Pilotta kullan, satış kanalı oluşturursan iade et / al.
+
+\subsection{Pilot Saha Donanımı (saha başına)}
+
+\begin{itemize}
+    \item Janitza UMG 96-PA (kompakt sayaç) --- 12K TL.
+    \item IoT gateway --- 4K TL.
+    \item 4G yedek bağlantı (M2M SIM, Turkcell IoT) --- 200 TL/ay.
+    \item Kurulum işçilik --- 15K TL.
+    \item Toplam saha kurulum: $\sim$40K TL — pilotta setup fee'den karşılanır.
+\end{itemize}
+
+% ===================================================================
+\section{Yazılım Stack'i (Önerilen)}
+
+\begin{tabularx}{\textwidth}{l X}
+\toprule
+\textbf{Katman} & \textbf{Teknoloji} \\
+\midrule
+Backend & Python 3.12, FastAPI, SQLModel, Alembic, Celery + Redis (queue) \\
+OCPP & \texttt{mobilityhouse/ocpp} (Python) — 1.6 + 2.0 destek \\
+Algoritma & \texttt{simulation\_v3.py} → \texttt{evlb/algorithms/} paket; numpy, scipy, CVXPY (Faz 3 MILP) \\
+ML & scikit-learn, XGBoost, LightGBM (V2). PyTorch + transformers (V3+). MLflow (model registry). \\
+DB & PostgreSQL 16 + TimescaleDB extension; Redis 7 \\
+Streaming & NATS (hafif) veya Kafka (saha sayısı 10+) \\
+Frontend & Next.js 14 + TypeScript + TanStack Query + Tailwind + shadcn/ui \\
+Mobile & React Native (faz 3) \\
+IaC & Terraform (Hetzner provider) + Ansible \\
+CI/CD & GitHub Actions; Docker; ghcr.io \\
+Observability & Grafana + Prometheus + Loki; Sentry \\
+Auth & Keycloak (self-hosted) veya Auth0 \\
+Test & pytest + pytest-asyncio; Playwright (E2E); Locust (load test) \\
+Container & Docker Compose (dev), Kubernetes (k3s pilot, EKS prod) \\
+\bottomrule
+\end{tabularx}
+
+% ===================================================================
+\section{Akademik İşbirliği \& Araştırma}
+
+\subsection{Hedef Kurumlar}
+
+\begin{tabularx}{\textwidth}{l X}
+\toprule
+\textbf{Kurum} & \textbf{Olası işbirliği} \\
+\midrule
+İTÜ Elektrik Mühendisliği / Enerji Enstitüsü & Yük tahmini, harmonik analizi, MILP \\
+ODTÜ EE / EE-MS programı & RL ajan tezi, demand response \\
+Boğaziçi Sürdürülebilir Kalkınma & Ekonomik analiz, müşteri davranışı \\
+Yıldız EE & Güç kalitesi, harmonik filtre tasarımı \\
+TOGG R\&D & V2G pilot, ISO 15118 \\
+TÜBİTAK MAM Enerji Enstitüsü & Şebeke entegrasyonu, BESS yönetimi \\
+KOÇ EE / Mühendislik & Optimizasyon, makine öğrenmesi \\
+Sabancı CDS\&E & ML / forecasting \\
+\bottomrule
+\end{tabularx}
+
+\subsection{Yapı Önerileri}
+\begin{itemize}
+    \item Her kurumdan 1 öğretim üyesini ``advisor'' olarak shareholder'la (\%0.25--0.5 shadow equity).
+    \item TÜBİTAK 1505 (Üniversite-Sanayi Ortak Ar-Ge) --- 1.5--2.5M TL, ortak proje formatı.
+    \item Yüksek lisans tezi sponsor (3K TL/ay × 18 ay = 54K TL) --- ucuz Ar-Ge gücü.
+    \item Yıllık IEEE Smart Grid TR konferans katılım + makale.
+\end{itemize}
+
+% ===================================================================
+\section{Riskler ve Atladığımız Açıklar}
+
+\subsection{Atlanmış 10 Risk Daha}
+
+\begin{enumerate}
+    \item \textbf{Charger üreticilerinin OCPP yorumu farklı.} Standart 1.6'da boşluklar var; üretici X'in \texttt{SetChargingProfile} algılayışı üretici Y'den farklı. Lab testi şart, tek üretici tek pilot.
+    \item \textbf{Saha elektrikçi ile görüşme gerekli.} Sayaç bağlantısı için AG/OG yetkili elektrikçi şart. KOSGEB elektrikçi listesi.
+    \item \textbf{Saha sahibinin elektrikçisi panik yapar.} ``Sayaca müdahale ediyorlar'' algısı. Çözüm: pilot ön-toplantısında elektrikçiyi dahil et.
+    \item \textbf{Kurumsal müşteri AŞ değilse vergi/finans kötü.} Faz 2'de A.Ş.'ye geç (avukat: 30K TL maliyet).
+    \item \textbf{Para bekleme süresi}. Kurumsal vade 60--90 gün; cash flow problem. \textbf{Setup fee'yi peşin al}, kontrata yaz.
+    \item \textbf{Pilot LOI'nin sözleşmeye çevrilememesi.} LOI = niyet, sözleşme = tahsis. Pilot kontratı şablonu hazır olsun.
+    \item \textbf{Algoritma yanlış karar verirse}. Sigorta lazım. Aynı zamanda ``pilot evresinde no liability'' kontrat maddesi.
+    \item \textbf{Charger arızası bizim hatamız sanılır.} Sözleşmede ``EVSE arızasından sorumlu değiliz'' maddesi. Telemetri ile kanıt logları.
+    \item \textbf{Yatırımcı iletişim yorgunluğu.} Pre-seed ile Seed arası 6--9 ay; haberleşme + güncellemeler şart. Aylık investor update e-postası.
+    \item \textbf{Ekip içi anlaşmazlık (3 kurucu).} Founders' Agreement gün 1; tahkim maddesi; vesting cliff.
+\end{enumerate}
+
+% ===================================================================
+\section{30 / 60 / 90 / 180 / 365 Gün Mihenk Taşları}
+
+\begin{tabularx}{\textwidth}{l X}
+\toprule
+\textbf{Tarih} & \textbf{Olması Gereken} \\
+\midrule
+30. gün & Founders' Agreement imzalı; 10+ customer discovery; OCPP 1.6 spec okundu; mobilityhouse/ocpp lab kurulumu çalışıyor. \\
+60. gün & 30 customer discovery + 3 LOI; TÜBİTAK BiGG başvurusu yapıldı; Vestel Bonus sipariş edilmiş; FastAPI skeleton hazır. \\
+90. gün & İlk gerçek charger BootNotification alındı; tarife modülü çalışıyor; ROI calculator demo; 1 friendly pilot saha kurulum başladı. \\
+180. gün & 1 friendly + 1--2 ücretli pilot canlı; XGBoost tahmin V2 üretimde; pre-seed kapanış görüşmeleri; 200--500K TL ARR pipeline. \\
+365. gün & 8--12 ödeyen müşteri; 1--2.5M TL ARR; 100--300 charger yönetilen; 5--12 kişilik ekip; Seed turu görüşmeleri başlamış. \\
+\bottomrule
+\end{tabularx}
+
+% ===================================================================
+\section{Doğrulama / Verification}
+
+\subsection{Aylık Check-in (her ayın 1'i)}
+
+\begin{itemize}
+    \item Customer discovery sayısı / hedef.
+    \item LOI sayısı / hedef.
+    \item Pilot sayısı (friendly + ücretli) / hedef.
+    \item ARR / hedef.
+    \item Yönetilen charger sayısı.
+    \item Yönetilen toplam kapasite (kW).
+    \item Tahmin doğruluğu (MAPE 1h, 24h).
+    \item Algoritma ROI (\% tasarruf, $\Delta$bekleme).
+    \item Cash runway (ay).
+\end{itemize}
+
+\subsection{Yön Değiştirme Tetikleri (Red Flags)}
+
+\begin{itemize}
+    \item 6 haftada 30 görüşme tamamlanmadıysa $\rightarrow$ operasyon disiplini sorunu.
+    \item 3 ayda 1 ödeyen pilot yoksa $\rightarrow$ ICP yanlış, geri dön.
+    \item 6 ayda 100K TL ARR'a ulaşılmadıysa $\rightarrow$ değer önerisi sorgula.
+    \item 9 ayda 3 ödeyen müşteri yoksa $\rightarrow$ pivot ya da kapatma sinyali.
+    \item Pilotta ``öncesi/sonrası'' raporu \%20 tasarruf altındaysa $\rightarrow$ algoritma değiştir.
+    \item Tahmin MAPE 24h $>$ \%25 üstündeyse $\rightarrow$ feature engineering, ICP daraltma.
+\end{itemize}
+
+\subsection{Ürün KPI'ları (üretimde)}
+
+\begin{tabularx}{\textwidth}{l l X}
+\toprule
+\textbf{KPI} & \textbf{Hedef} & \textbf{Ölçüm} \\
+\midrule
+Trafo aşım dakikası & $-\%80$ vs baseline & power\_log $>$ limit \\
+Aylık fatura tasarrufu & $\%20$--$\%40$ & TEDAŞ tarifesi $\times$ delta tüketim \\
+Charger başına saatlik servis & $\times 1.5$--$2.5$ & transaction\_count / hour / charger \\
+Müşteri başına ortalama bekleme & $-\%30$ & wait\_minutes ortalama \\
+Tahmin MAPE 1h / 24h & $<\%10$ / $<\%18$ & walk-forward CV \\
+Sistem uptime & $\%99.5$ & Prometheus uptime \\
+OCPP bağlantı drop'u & $<\%1$ aylık & connection\_drops / heartbeat\_count \\
+\bottomrule
+\end{tabularx}
+
+% ===================================================================
+\section{Kapanış --- Kritik 5 Şey}
+
+\begin{enumerate}
+    \item \textbf{Customer discovery'yi atlama.} 6 hafta disiplinli geçir. Türkiye'de teknik kurucular bu adımı atlar ve 6 ay sonra ``ürün doğru ama müşteri yanlış'' acısı yaşar.
+
+    \item \textbf{OCPP'yi öğren ama overengineering yapma.} 1.6 Core + Smart Charging Profile yeterli; 2.0.1 Faz 3. ISO 15118 Faz 4. Spec'i derinleşmek vakit yer; pratik lab testi daha hızlı öğretir.
+
+    \item \textbf{Tahmin modelinde XGBoost yeterlidir.} V1 baseline → V2 XGBoost → Production. Transformer/LSTM yatırımcı pitch'inde göster ama production'a XGBoost koy. \textbf{Veri olmadan model olmaz}; ilk 3 ay veri toplama.
+
+    \item \textbf{3 kurucu = 3x velocity ama 3x koordinasyon riski.} Founders' Agreement gün 1, vesting 4 yıl 1 yıl cliff, haftalık 1:1 sync, aylık strateji review, paylaşımlı OKR.
+
+    \item \textbf{Hızlı gitmenin tek limiti hukuk + regülatör.} EPDK + KVKK + KİK alanlarını ihmal etme. 2. ayda 1 günlük yasal danışman ile yol haritası temizle (Esin Avukatlık veya Pekin Bayar Türkiye).
+\end{enumerate}
+
+\vspace{1cm}
+\begin{center}
+\textit{Bu doküman \texttt{simulation\_v3.py} prototipinin Türkiye'de ticarileşme yol haritasıdır.\\
+Yazıldığı tarih: \today\\
+Sürüm: v1 — Birleşik Teknik \& İş Planı, 12 Ay, 3 Kurucu.}
+\end{center}
+
+\end{document}

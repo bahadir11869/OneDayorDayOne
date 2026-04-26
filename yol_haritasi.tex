@@ -1,0 +1,362 @@
+% =================================================================
+% EV Yük Dengeleme Startup — Türkiye Hızlandırılmış Yol Haritası
+% 3 Kurucu, 12 Ay Hedef
+%
+% Derleme: pdflatex yol_haritasi.tex (iki kez çalıştırın -> içindekiler için)
+% =================================================================
+\documentclass[11pt,a4paper]{article}
+
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage[turkish]{babel}
+\usepackage[a4paper, margin=2.3cm]{geometry}
+\usepackage{titlesec}
+\usepackage{enumitem}
+\usepackage{xcolor}
+\usepackage{tabularx}
+\usepackage{booktabs}
+\usepackage{longtable}
+\usepackage{array}
+\usepackage{hyperref}
+\usepackage{parskip}
+
+\hypersetup{
+    colorlinks=true,
+    linkcolor=blue!50!black,
+    urlcolor=blue!60!black
+}
+
+\titleformat{\section}{\Large\bfseries\color{blue!40!black}}{\thesection}{0.6em}{}
+\titleformat{\subsection}{\large\bfseries\color{blue!30!black}}{\thesubsection}{0.5em}{}
+
+\setlist[itemize]{leftmargin=1.2em, itemsep=2pt, topsep=2pt}
+\setlist[enumerate]{leftmargin=1.4em, itemsep=2pt, topsep=2pt}
+
+\title{\textbf{EV Yük Dengeleme Startup}\\
+       Türkiye Hızlı Yol Haritası\\
+       \large 3 Kurucu \textbar\ 12 Aylık Hedef}
+\author{}
+\date{\today}
+
+\begin{document}
+\maketitle
+
+% -------------------------------------------------------------------
+\section*{Yönetici Özeti}
+
+\textbf{Mevcut:} \texttt{simulation\_v3.py} --- 5 algoritmalı (Algoritmasız / Yönetimli / SRPT / Water-Filling / Dinamik Adil), 5 saha senaryolu (AVM, ofis, otel, hastane, havalimanı), trafo/pik/güç faktörü kısıtlı, dakika çözünürlüklü, Excel + dashboard çıktılı prototip.
+
+\textbf{Hedef:} 12 ay içinde Türkiye'de en az 5 ödeyen kurumsal müşteri, ölçülebilir ROI raporu ve Seed turuna hazır metrik tabanlı bir startup.
+
+\textbf{Öneri (TL;DR):}
+\begin{itemize}
+    \item \textbf{Salt yazılım} yap, donanım çözme. OCPP üzerinden mevcut charger'ları yönet.
+    \item \textbf{Birincil müşteri = saha sahibi} (AVM, büyük otopark, lojistik depo, otel). CPO değil.
+    \item \textbf{CPO ikinci faz}, \textbf{devlet üçüncü faz}.
+    \item \textbf{İlk para = TÜBİTAK 1512 BiGG} (200K TL hibe, geri ödemesiz).
+    \item \textbf{3 kurucu} = paralel çalışma. Her kurucu net dikey: \textit{Tech/Algoritma}, \textit{Embedded/OCPP/Saha}, \textit{Operasyon/Satış/Finansman}.
+    \item \textbf{Konumlanma:} EPDK lisanslı CPO \textbf{değil}; CPO ve saha sahiplerine yazılım çözümü sağlayan \textit{energy management software} firması.
+\end{itemize}
+
+% -------------------------------------------------------------------
+\section{Pazar Konumlanma}
+
+\subsection{Birincil ICP --- Saha Sahibi (Faz 1, Ay 0--6)}
+
+\begin{tabularx}{\textwidth}{l l X X}
+\toprule
+\textbf{Segment} & \textbf{Boyut} & \textbf{Pain} & \textbf{Değer Vaadi} \\
+\midrule
+AVM & $\sim$440 (AYD) & Trafo dolu, 5+ DC charger için yeni trafo gerekli & Mevcut trafoyla 2--3x charger; pik tıraşlama ile \%20--40 fatura tasarrufu \\
+Lojistik / filo deposu & 3--5K büyük tesis & Akşam aynı saatte tüm filoyu şarj etme & Vardiya bazlı priorite + tarife optimizasyonu \\
+Otel / rezidans & 5--15K şarjlı tesis 2027'ye & Aynı anda 5+ araç bağlandığında kapasite aşımı & Adil paylaşım, SoC bazlı aceleciliğe göre öncelik \\
+Küçük CPO (lokasyon) & 50--200 firma & Multi-site optimizasyon & Site içi load balancing + raporlama \\
+\bottomrule
+\end{tabularx}
+
+\textbf{Birincil hedef AVM ve büyük otopark.} Sebep: (a) merkezi karar mercii var, (b) trafo sıkıntısı en akut, (c) ROI hesabı somut yapılabilir, (d) referans değeri yüksek (Cevahir / Akmerkez / İstinyePark gibi isimler ileriki satışlar için çarpan).
+
+\subsection{İkincil ICP --- CPO (Faz 2, Ay 6--9)}
+Voltrun, ZES, Eşarj, Sharz, ChargeBolt, Trugo, Astor Şarj, ON şarj. İhtiyaç: multi-site fleet optimizasyonu, demand response uyumu, OCPP 2.0.1 + ISO 15118 desteği.
+
+\subsection{Üçüncül --- Devlet/Belediye (Faz 3, Ay 9--12+)}
+İBB, ABB, BSB, üniversite kampüsleri, Şehir Hastaneleri, TCDD, TOGG ekosistemi. Satış döngüsü 6--12 ay (KİK kapsamında). Önce 5+ özel sektör referansı gerekli.
+
+% -------------------------------------------------------------------
+\section{Ürün Vizyonu --- Simülasyondan Üretime}
+
+\subsection{Mimari Katmanlar}
+
+\begin{itemize}
+    \item \textbf{Sunum:} Web Dashboard (Next.js) operatör UI; Mobile (React Native) opsiyonel kullanıcı UI.
+    \item \textbf{API:} REST/GraphQL (FastAPI veya NestJS).
+    \item \textbf{Algoritma Çekirdeği:} \texttt{simulation\_v3}'ten port; Dinamik Adil + Water-Filling production-grade; rolling-horizon MILP/QP (CVXPY veya OR-Tools) Faz 2.
+    \item \textbf{Real-time Karar Döngüsü:} 30 sn -- 1 dk cycle.
+    \item \textbf{OCPP Gateway:} 1.6J Core + Smart Charging Profile, Faz 2'de 2.0.1.
+    \item \textbf{Telemetri:} Celery / NATS + TimescaleDB (zaman serisi) + PostgreSQL (durum).
+    \item \textbf{Multi-tenant izolasyon:} bir backend, N müşteri; row-level security.
+    \item \textbf{Audit log:} EPDK ve kurumsal denetim için.
+\end{itemize}
+
+\subsection{Simülasyondan Eksikler}
+\begin{itemize}
+    \item \textbf{OCPP 1.6 client} --- \texttt{SetChargingProfile} mesajı ile gerçek charger'a güç limiti gönderme.
+    \item \textbf{Real-time tarife verisi} --- TEDAŞ/EPDK kademeli tarife (gündüz / puant / gece).
+    \item \textbf{Demand response sinyali} --- BEDAŞ/AYEDAŞ curtailment talebine otomatik tepki.
+    \item \textbf{Müşteri kontrol paneli} --- saha yöneticisine: anlık güç, tarife etkisi, raporlar.
+    \item \textbf{API \& multi-tenant izolasyon}.
+    \item \textbf{Audit log + rapor} --- regülatör ve iç denetim.
+\end{itemize}
+
+% -------------------------------------------------------------------
+\section{12 Aylık Yol Haritası (3 Kurucu)}
+
+\textbf{Kurucu rol dağılımı önerisi:}
+\begin{itemize}
+    \item \textbf{CTO / Algoritma:} \texttt{simulation\_v3} sahibi. Backend, algoritma, MILP, telemetry.
+    \item \textbf{Embedded / OCPP / Saha:} EE veya güç sistemleri arka plan. Charger entegrasyon, lab test, devreye alma.
+    \item \textbf{CEO / Operasyon / Satış:} Customer discovery, fonlama, kurumsal satış, hukuk/regülatör.
+\end{itemize}
+
+\subsection{Faz 0 --- Validasyon (Ay 0--1.5)}
+\textbf{Tek hedef:} ``Birinin acısına karşılık para ödeyeceği kadar net bir pain anladık'' demek.
+\begin{itemize}
+    \item Paralel \textbf{30 customer discovery görüşmesi} (her kurucu 10): 8--10 AVM teknik müdürü, 5--8 lojistik filo müdürü, 3--5 otel facility manager, 3--5 CPO operasyon.
+    \item Görüşme şablonu: ``Şu an N şarj noktanız var. Hangi sıklıkla sorun? Ek trafo aldınız/alacak mı? KW tarifeniz? Şarj iptal/ay?''
+    \item En az 3 LOI (Letter of Intent) hedef.
+\end{itemize}
+
+\subsection{Faz 1 --- MVP (Ay 1.5--4.5)}
+\begin{itemize}
+    \item \textbf{Ekip net:} 3 kurucu + 0--1 dev hire.
+    \item \textbf{TÜBİTAK 1512 BiGG başvurusu} (Ay 1.5--3): 200K TL hibe. Pilot LOI'ler ek olarak.
+    \item \textbf{MVP geliştirme} (paralel, 3 kurucu):
+        \begin{itemize}
+            \item Single-tenant, 1 saha, 5--10 charger.
+            \item OCPP 1.6 Core + Smart Charging entegrasyonu (Vestel Bonus, Phihong, ABB ile lab test).
+            \item Operatör dashboard: anlık güç, alarm, rapor.
+            \item Algoritma: Dinamik Adil + Water-Filling production-grade.
+        \end{itemize}
+    \item \textbf{1--2 friendly pilot} (ücretsiz veya sembolik ücret). Amaç: gerçek saha verisi + case study.
+\end{itemize}
+
+\subsection{Faz 2 --- Ücretli Pilot \& Erken Gelir (Ay 4.5--8)}
+\begin{itemize}
+    \item \textbf{3--5 ücretli pilot kontratı} (3--6 aylık).
+    \item \textbf{Fiyatlandırma:}
+        \begin{itemize}
+            \item Setup fee: 30--80K TL (kurulum + entegrasyon).
+            \item Aylık SaaS: charger başına 500--1500 TL/ay.
+            \item Veya: tasarrufun \%20--30'u (performance based).
+        \end{itemize}
+    \item \textbf{Pre-seed turu (3--8M TL)} açılır (Ay 5--8):
+        \begin{itemize}
+            \item Angel: Galata Business Angels, KEIRETSU Forum İstanbul, BIC Angels.
+            \item Mikro VC: ScaleX Ventures, İTÜ Çekirdek/Magnet, Etohum, Diffusion Capital.
+            \item Stratejik: Borusan CVC, Sabancı DXVentures, Vestel, Aksa Enerji, Zorlu.
+        \end{itemize}
+    \item \textbf{KPI faz sonu:} 3--5 ödeyen, 100--300K TL ARR, 5--7 kişilik ekip.
+\end{itemize}
+
+\subsection{Faz 3 --- Ölçek Hazırlığı (Ay 8--12)}
+\begin{itemize}
+    \item Pre-seed kapanışı $\rightarrow$ ekibi 8--12 kişiye çıkar (sales 2 kişi, dev 2--3, ops 1).
+    \item Channel partner programı: Vestel, Aksa, Phihong Türkiye, Schneider Türkiye.
+    \item Ürün genişlemesi:
+        \begin{itemize}
+            \item OCPP 2.0.1 desteği.
+            \item Demand response modülü (BEDAŞ pilot).
+            \item Multi-site fleet view (CPO ICP'sine geçiş).
+        \end{itemize}
+    \item \textbf{KOSGEB Ar-Ge / TÜBİTAK 1507} başvurusu --- 750K--1.5M TL ek (geri ödemeli, düşük faiz).
+    \item \textbf{Seed turu hazırlığı} (15--40M TL, kapanış 12.--15. ay arasında):
+        \begin{itemize}
+            \item 212, Re-Pie, Earlybird Digital East, Diffusion, Revo Capital, Logo Ventures.
+            \item AB: Speedinvest, Hoxton, EnBW Innovation.
+        \end{itemize}
+    \item \textbf{KPI 12. ay sonu:} 8--12 ödeyen müşteri, 1--2.5M TL ARR, 100--300 charger yönetilen, 5--12 kişilik ekip.
+\end{itemize}
+
+% -------------------------------------------------------------------
+\section{Türkiye'ye Özgü Finansman Yol Haritası}
+
+\begin{tabularx}{\textwidth}{l l l X r}
+\toprule
+\textbf{Aşama} & \textbf{Ay} & \textbf{Tutar} & \textbf{Kaynak} & \textbf{Dilüsyon} \\
+\midrule
+Bootstrap & 0--2 & 0--150K TL & Kendi cep + freelance & 0\% \\
+TÜBİTAK 1512 BiGG & 2--5 & 200K TL & TÜBİTAK (hibe) & 0\% \\
+Pre-Seed & 5--8 & 3--8M TL & Angel + mikro VC & 12--18\% \\
+TÜBİTAK 1507 / KOSGEB & 6--10 & 750K--1.5M TL & KOBİ Ar-Ge (geri ödemeli, kısmen hibe) & 0\% \\
+Seed & 10--14 & 15--40M TL & Türk + AB VC & 15--22\% \\
+\bottomrule
+\end{tabularx}
+
+\textbf{Pratik tavsiye:} Hibe ve dilüsyonsuz krediyi maks kullan, ilk dilüsyonu 5. aydan önce alma. Erken evredeki düşük valuation seni 12. ayda pişman eder.
+
+% -------------------------------------------------------------------
+\section{Regülasyon, Sertifikasyon, Standartlar}
+
+\begin{itemize}
+    \item \textbf{EPDK Şarj Hizmeti Yönetmeliği (2022):} Lisanslı CPO olma. Pozisyon: \textit{``şarj operatörlerine ve saha sahiplerine yazılım çözümü.''}
+    \item \textbf{OCPP 1.6J Core + Smart Charging Profile:} Olmazsa olmaz. Open Charge Alliance üyeliği \$1500/yıl iyi sinyal.
+    \item \textbf{OCPP 2.0.1:} Faz 3, 8--12. ayda gerekli.
+    \item \textbf{ISO 15118 (Plug-and-Charge):} TOGG ve premium markalar için --- Faz 3.
+    \item \textbf{KVKK:} Şarj seansı = kişisel veri. Aydınlatma metni + VERBİS sicili zorunlu.
+    \item \textbf{ISO 27001:} Kurumsal müşteri şartnamelerinde geliyor; Faz 2 sonu hedef.
+\end{itemize}
+
+% -------------------------------------------------------------------
+\section{Rekabet \& Farklılaşma}
+
+\textbf{Yerel:} Voltrun, ZES (Zorlu), Eşarj (EnerjiSA + Sabancı) öncelikle \textbf{operatör}, software-only değil. Bunlar müşteri/ortak; rakip değil.
+
+\textbf{Pure software player Türkiye'de neredeyse yok.} Pencere maks 12--18 ay açık.
+
+\textbf{Uluslararası karşılaştırma:}
+\begin{itemize}
+    \item Driivz (İsrail, Vontier'e \$219M satıldı) --- CPO yönetim platformu.
+    \item AmpUp (US, \$13M Seed) --- multi-site fleet management.
+    \item ev.energy (UK, \$12M Series B) --- residential focus.
+    \item Heliox (NL, ABB satın aldı) --- fleet/heavy duty.
+    \item Wallbox / Monta (EU) --- consumer + small CPO.
+\end{itemize}
+
+\textbf{Senin diferansiyatörlerin:}
+\begin{enumerate}
+    \item Yerel saha tipolojisi anlayışı (AVM Türkiye'ye özgü).
+    \item Yerel grid karakteristiği (TM dağıtım, kademeli tarife, BEDAŞ/AYEDAŞ pilotları).
+    \item Türkçe destek + on-site servis.
+    \item Algoritma çeşitliliği: rakipler genelde fair-share; SRPT + Dinamik Adil + MILP yol haritan derin.
+\end{enumerate}
+
+% -------------------------------------------------------------------
+\section{İlk 90 Gün --- Concrete Aksiyonlar}
+
+\subsection{Hafta 1--2: Temel}
+\begin{itemize}
+    \item Şirket: şahıs şirketi yeterli ilk 6 ay (LLC erteleme).
+    \item Domain + e-posta + LinkedIn profilleri update.
+    \item 30 customer discovery listesi (LinkedIn outreach + sıcak temas).
+\end{itemize}
+
+\subsection{Hafta 3--6: Customer Discovery}
+\begin{itemize}
+    \item 3 kurucu paralel \textbf{30 görüşme} (her biri 10).
+    \item Pain matrisi: Frequency $\times$ Severity.
+    \item 3+ doğrulanmış pain, 2--3 LOI imzalı.
+\end{itemize}
+
+\subsection{Hafta 6--10: TÜBİTAK BiGG + Spike}
+\begin{itemize}
+    \item TÜBİTAK 1512 BiGG başvuru paketi (15--25 sayfa iş planı + demo video + LOI).
+    \item OCPP 1.6 client referans projesini fork: SteVe, OCPP.js, mobilityhouse/ocpp.
+    \item Tek charger (Vestel Bonus DC) ile lab test --- gerçek güç limiti gönderme.
+\end{itemize}
+
+\subsection{Hafta 10--13: MVP Skeleton}
+\begin{itemize}
+    \item Backend: FastAPI + Postgres + Redis + TimescaleDB.
+    \item Frontend: Next.js read-only dashboard.
+    \item Algoritma core: \texttt{simulation\_v3 $\rightarrow$ production}.
+    \item İlk friendly pilot saha hazırlığı.
+\end{itemize}
+
+\subsection{90. Gün Kontrol Listesi}
+\begin{itemize}
+    \item[$\square$] 30 customer discovery yapıldı, pain dokümante.
+    \item[$\square$] 3+ pilot LOI imzalı.
+    \item[$\square$] TÜBİTAK 1512 BiGG başvurusu yapıldı.
+    \item[$\square$] Tek charger ile OCPP üzerinden gerçek güç kontrolü demo çalıştı.
+    \item[$\square$] Web dashboard ilk versiyon (read-only).
+\end{itemize}
+
+% -------------------------------------------------------------------
+\section{Riskler ve Kritik Karar Noktaları}
+
+\begin{tabularx}{\textwidth}{X c c X}
+\toprule
+\textbf{Risk} & \textbf{Olasılık} & \textbf{Etki} & \textbf{Mitigasyon} \\
+\midrule
+OCPP entegrasyonu beklendiğinden zor & Orta & Yüksek & Faz 0'da donanım üreticisiyle birebir görüş, SDK al \\
+Customer discovery'de pain bulunmaması & Düşük & Çok yüksek & Bulamazsan ICP değiştir, hızlı pivot \\
+Pilot ücretsizden ücretliye geçememek & Yüksek & Orta & Setup fee'yi pilot anında al; ROI raporunu kontratta zorunlu kıl \\
+EPDK'nın yazılımı CPO'ya bağlaması & Düşük & Yüksek & Yasal danışman (Esin Av., Pekin Bayar); yıllık takip \\
+TÜBİTAK BiGG reddi & Orta & Düşük & KOSGEB Ar-Ge'ye paralel başvur; angel turuyla yedekle \\
+Büyük oyuncunun (Voltrun/ZES) içeride yapması & Yüksek & Yüksek & Onlarla satıcı ilişkisi kur; M\&A stratejisini mümkün tut \\
+3 kurucu uyumsuzluğu & Orta & Çok yüksek & Founders' Agreement gün 1; vesting (4 yıl, 1 yıl cliff); rol netliği \\
+\bottomrule
+\end{tabularx}
+
+\subsection{Kritik Forklar}
+\begin{description}
+    \item[K1 --- Salt yazılım mı, hardware bundle mı?] \textbf{Salt yazılım.} Hardware = stok + sermaye + lojistik. Yazılım marjı 80\%+, ölçeklenebilir. Hardware partneri (Vestel) ile referans satışı, sen yazılım tarafında komisyon.
+    \item[K2 --- AVM mi, lojistik filo mu, otel mi?] \textbf{Birincil AVM} (görünürlük, referans). \textbf{Paralel 1 lojistik pilotu} (Borusan / Ekol) satış çevrim uzunluğunu dengelemek için.
+    \item[K3 --- Türkiye odaklı mı, AB'ye baş mı?] Faz 1--2 pure Türkiye. Faz 3'te KKTC + Azerbaycan + Romanya/Bulgaristan. AB direkt giriş regülasyon karmaşası ve fonlama farkından dolayı erken yenilgi.
+    \item[K4 --- Open source mu, kapalı mı?] Algoritma çekirdeği kapalı, OCPP gateway katmanı open-source. Developer mindshare kazandırır, IP'yi korur.
+\end{description}
+
+% -------------------------------------------------------------------
+\section{KPI'lar (12 Ay Sonu)}
+
+\begin{tabularx}{\textwidth}{X r}
+\toprule
+\textbf{Metrik} & \textbf{Hedef} \\
+\midrule
+Ödeyen müşteri sayısı & 8--12 \\
+ARR (Annual Recurring Revenue) & 1--2.5M TL \\
+Yönetilen charger sayısı & 100--300 \\
+Yönetilen toplam kapasite & 1.5--5 MW \\
+Ekip büyüklüğü & 5--12 \\
+Cumulative funding (hibe + krediler hariç) & 8--15M TL \\
+Net Revenue Retention & 110\%+ \\
+Sales cycle (avg) & $<$60 gün \\
+\bottomrule
+\end{tabularx}
+
+% -------------------------------------------------------------------
+\section{Doğrulama / Verification}
+
+\textbf{Aylık check-in:} customer discovery sayısı, LOI sayısı, pilot sayısı, ARR.
+
+\textbf{Quarterly milestone:} funding aşaması, ekip büyüklüğü, ürün modülü.
+
+\textbf{Yön değiştirme tetikleri (red flags):}
+\begin{itemize}
+    \item 6 haftada 30 görüşme tamamlanmadıysa $\rightarrow$ operasyon disiplini sorun.
+    \item 3 ayda 1 ödeyen pilot yoksa $\rightarrow$ ICP yanlış, geri dön Faz 0'a.
+    \item 6 ayda 100K TL ARR'a ulaşılamadıysa $\rightarrow$ değer önerisi sorgula.
+    \item 9 ayda 3 ödeyen müşteri yoksa $\rightarrow$ pivot ya da kapatma sinyali.
+\end{itemize}
+
+\textbf{Ürün doğrulama:} her pilot için \textbf{öncesi/sonrası karşılaştırma raporu}:
+\begin{itemize}
+    \item Trafo aşım dakikası: \%X azalma.
+    \item Aylık elektrik faturası: \%Y tasarruf.
+    \item Ortalama bekleme süresi: değişim.
+    \item Saatte servis verilen araç (charger başına): artış.
+\end{itemize}
+
+Bu rapor = satış silahın. Her pilot, sonraki 5 satışın temeli.
+
+% -------------------------------------------------------------------
+\section{Kritik Olduğunu Düşündüğüm 4 Şey}
+
+\begin{enumerate}
+    \item \textbf{Customer discovery'yi atlama.} Türkiye'de teknik kurucular ürünü 6 ay yapıp ``kimse istemiyormuş'' sürprizine düşer. 6 hafta disiplinli kullan.
+    \item \textbf{3 kurucu = 3x velocity ama 3x koordinasyon riski.} Founders' Agreement gün 1, vesting 4 yıl 1 yıl cliff, haftalık 1:1, aylık strateji.
+    \item \textbf{Simülasyon (\texttt{simulation\_v3.py}) bir varlık.} Müşteri toplantısında dashboard'u canlı çalıştırmak teknik güveni 10x artırır. Satış demosuna çevir; web'e taşı, \textit{interactive scenario builder} yap, inbound lead getirir.
+    \item \textbf{Hızlı gitmenin tek limiti hukuk + regülatör.} EPDK + KVKK + KİK alanlarını ihmal etme; 2. ayda yarım günlük yasal danışman alarak roadmap'i temizle.
+\end{enumerate}
+
+% -------------------------------------------------------------------
+\section*{Kritik Dosyalar}
+
+\begin{itemize}
+    \item \texttt{F:/LoadBalancing/simulation\_v3.py} --- algoritmik çekirdek; production'a port edilecek.
+    \item \texttt{F:/LoadBalancing/dataset.json} --- yapay test verisi; gerçek pilotlarda yerine telemetri stream'i geçecek.
+    \item \texttt{F:/LoadBalancing/ev\_coklu\_kontrolcu\_raporu.xlsx} --- müşteri toplantısında canlı demo materyali.
+    \item \texttt{F:/LoadBalancing/dashboard\_*.png} --- algoritmik diferansın görsel kanıtı.
+\end{itemize}
+
+\end{document}

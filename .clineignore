@@ -11,7 +11,7 @@
 *.csv
 *.md
 *.pdf
-*.py
-!simulation_v3.py
-!src/paket/*.py
-.rooignore
+*.tex
+.claude
+# src/paket klasörü hariç tutuluyor
+src/paket/*.py

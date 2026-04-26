@@ -1,0 +1,2316 @@
+% =================================================================
+% EV Yük Dengeleme — Adım Adım Teknik Roadmap (Sıfırdan Başlangıç)
+% Numaralandırılmış 180 atomik adım
+%
+% Derleme: pdflatex adim_adim_teknik_roadmap.tex (2 kez — toc için)
+% =================================================================
+\documentclass[11pt,a4paper]{article}
+
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage[turkish]{babel}
+\usepackage[a4paper, margin=2.0cm]{geometry}
+\usepackage{titlesec}
+\usepackage{enumitem}
+\usepackage{xcolor}
+\usepackage{tabularx}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{hyperref}
+\usepackage{parskip}
+\usepackage{listings}
+
+\hypersetup{
+    colorlinks=true,
+    linkcolor=blue!50!black,
+    urlcolor=blue!60!black
+}
+
+\titleformat{\section}{\Large\bfseries\color{blue!40!black}}{\thesection}{0.6em}{}
+\titleformat{\subsection}{\large\bfseries\color{blue!30!black}}{\thesubsection}{0.5em}{}
+
+\setlist[itemize]{leftmargin=1.2em, itemsep=1pt, topsep=2pt}
+
+% Kod listesi stili
+\lstset{
+    basicstyle=\footnotesize\ttfamily,
+    breaklines=true,
+    frame=single,
+    backgroundcolor=\color{gray!8},
+    columns=fullflexible
+}
+
+% Adım sayacı (her bölüm değil, baştan sona devam eden)
+\newcounter{adim}
+\setcounter{adim}{0}
+\newcommand{\adim}[1]{%
+    \refstepcounter{adim}%
+    \vspace{0.6em}%
+    \noindent\textbf{\large Adım \theadim. #1}\par%
+    \vspace{0.2em}%
+}
+
+\title{\textbf{EV Yük Dengeleme — Sıfırdan Üretime Adım Adım Roadmap}\\
+       \large 180 Numaralandırılmış Atomik Adım\\
+       \normalsize \today}
+\author{}
+\date{}
+
+\begin{document}
+\maketitle
+\tableofcontents
+\newpage
+
+% ===================================================================
+\section{Bu Belge Nasıl Kullanılır}
+
+Bu roadmap \texttt{simulation\_v3.py} prototipinden ticari ürüne giden yolu \textbf{180 sıralı adıma} bölmüştür. Her adım atomik (1-3 saatlik somut iş), bağımlılığı belli, başarı kriteri tanımlı.
+
+Her adım şu şablona göredir:
+\begin{itemize}
+    \item \textbf{Niye:} bu adım niye var.
+    \item \textbf{Önce:} hangi adımları bitirmen gerek.
+    \item \textbf{Ne yapacaksın:} somut aksiyonlar.
+    \item \textbf{Bittiği nasıl anlaşılır:} kabul kriteri.
+\end{itemize}
+
+\textbf{Stratejik kullanım:}
+\begin{itemize}
+    \item \textbf{Sırayı değiştirme}, bağımlılıklar gerçek.
+    \item Her adım sonunda Git commit (``adım N: özet'').
+    \item 3 kurucu ile bazı adımlar paralel yürür --- her fazın başında ``paralelize edilebilir'' adımlar listelenmiştir.
+    \item Tıkanırsan: bir önceki adıma geri dön, kabul kriterini yeniden kontrol et.
+\end{itemize}
+
+\textbf{Faz dağılımı:}
+\begin{itemize}
+    \item \textbf{Faz 0} (Adım 1--15): Geliştirme ortamı sıfırdan kurulumu.
+    \item \textbf{Faz 1} (Adım 16--30): Mevcut prototipi ``proje'' haline getirme.
+    \item \textbf{Faz 2} (Adım 31--40): Maliyet/tarife modülü.
+    \item \textbf{Faz 3} (Adım 41--60): OCPP'yi sıfırdan öğrenme + lab.
+    \item \textbf{Faz 4} (Adım 61--75): Donanım kurulumu (Vestel + Janitza + Gateway).
+    \item \textbf{Faz 5} (Adım 76--100): Backend MVP (FastAPI + DB + API).
+    \item \textbf{Faz 6} (Adım 101--115): Telemetri pipeline + akıllı sayaç.
+    \item \textbf{Faz 7} (Adım 116--140): Yük tahmini (veri $\to$ ML model $\to$ üretim).
+    \item \textbf{Faz 8} (Adım 141--150): Algoritmayı production'a port.
+    \item \textbf{Faz 9} (Adım 151--165): Operatör dashboard (Next.js).
+    \item \textbf{Faz 10} (Adım 166--175): Bulut deploy + CI/CD.
+    \item \textbf{Faz 11} (Adım 176--180): Pilot sahaya kurulum.
+\end{itemize}
+
+% ===================================================================
+\newpage
+\section{FAZ 0 --- Geliştirme Ortamı Kurulumu (Adım 1--15)}
+
+\textit{Bu fazda hiçbir kod yazmıyorsun --- aletleri kurar, hesapları açar, ekibi senkronlarsın. Atlamak \textbf{çok pahalıya patlıyor}; her adımı tamamla.}
+
+\adim{Python 3.12 kurulumu (her kurucu)}
+\textbf{Niye:} Tüm kod buradan çalışacak; sürüm uyumsuzluğu en sık ekip kavgası sebebidir.\\
+\textbf{Önce:} ---\\
+\textbf{Ne yapacaksın:}
+\begin{itemize}
+    \item Windows: \href{https://www.python.org/downloads/}{python.org} → 3.12.x installer indir → ``Add Python to PATH'' işaretli kur.
+    \item Mac: \texttt{brew install python@3.12}
+    \item Linux: \texttt{sudo apt install python3.12 python3.12-venv}
+\end{itemize}
+\textbf{Bittiği nasıl anlaşılır:} Terminalde \texttt{python --version} → \texttt{Python 3.12.x}.
+
+\adim{Git kurulumu + global config (her kurucu)}
+\textbf{Niye:} Versiyon kontrolü olmadan ekip çalışması imkansız.\\
+\textbf{Önce:} ---\\
+\textbf{Ne yapacaksın:}
+\begin{itemize}
+    \item Windows: \href{https://git-scm.com}{git-scm.com} → installer.
+    \item \texttt{git config --global user.name "Adın Soyadın"}
+    \item \texttt{git config --global user.email "sen@example.com"}
+    \item \texttt{git config --global init.defaultBranch main}
+    \item SSH key oluştur: \texttt{ssh-keygen -t ed25519 -C "sen@example.com"}, çıktı \texttt{\textasciitilde/.ssh/id\_ed25519.pub}'u GitHub'a ekle.
+\end{itemize}
+\textbf{Bittiği nasıl anlaşılır:} \texttt{ssh -T git@github.com} → ``Hi <kullanıcı>! You've successfully authenticated.''
+
+\adim{VS Code + temel eklentiler (her kurucu)}
+\textbf{Niye:} Tek IDE ekipte standart; format ve linter farklı olunca commit savaşı çıkar.\\
+\textbf{Önce:} ---\\
+\textbf{Ne yapacaksın:}
+\begin{itemize}
+    \item \href{https://code.visualstudio.com}{code.visualstudio.com} → kur.
+    \item Eklentiler: Python (Microsoft), Pylance, Black Formatter, Ruff, GitLens, Docker, Remote SSH, Even Better TOML.
+    \item Settings: \texttt{"editor.formatOnSave": true}, \texttt{"python.formatting.provider": "black"}.
+\end{itemize}
+\textbf{Bittiği nasıl anlaşılır:} Boş \texttt{.py} dosyasında \texttt{print("hi")} yaz, kaydet, otomatik formatlanması.
+
+\adim{GitHub organizasyonu \& private repo aç}
+\textbf{Niye:} Kod org altında olunca founder ayrılığı durumunda repo kişide kalmaz.\\
+\textbf{Önce:} Adım 2.\\
+\textbf{Ne yapacaksın:}
+\begin{itemize}
+    \item GitHub → New organization → Free plan başla.
+    \item Org adı: şirket adınla aynı (henüz yoksa kod adı koy, sonra yeniden adlandır).
+    \item Repo oluştur: \texttt{<org>/evlb-core} (private). README + .gitignore (Python) + MIT (sonra değiştirebilirsin) seç.
+    \item Üç kurucuyu admin olarak ekle.
+\end{itemize}
+\textbf{Bittiği nasıl anlaşılır:} 3 kurucu da repo URL'sine erişebiliyor.
+
+\adim{Repo klonla \& mevcut prototipi taşı}
+\textbf{Niye:} \texttt{F:/LoadBalancing/simulation\_v3.py} versiyon kontrolüne girmeli.\\
+\textbf{Önce:} Adım 4.\\
+\textbf{Ne yapacaksın:}
+\begin{itemize}
+    \item \texttt{git clone git@github.com:<org>/evlb-core.git}
+    \item Mevcut dosyaları (\texttt{simulation\_v3.py}, \texttt{dataset.json}, son tex/png çıktıları, README) yeni repo dizinine kopyala.
+    \item \texttt{git add . \&\& git commit -m "feat: import existing simulation prototype" \&\& git push}
+\end{itemize}
+\textbf{Bittiği nasıl anlaşılır:} GitHub web arayüzünde \texttt{simulation\_v3.py} görünüyor.
+
+\adim{Branch protection \& PR kuralları}
+\textbf{Niye:} Hiçbir kurucu doğrudan \texttt{main}'e push edemesin; her değişiklik PR'dan geçsin.\\
+\textbf{Önce:} Adım 5.\\
+\textbf{Ne yapacaksın:}
+\begin{itemize}
+    \item Repo Settings → Branches → \texttt{main} için ``Require pull request before merging'' aç.
+    \item ``Require approvals'' = 1.
+    \item ``Require status checks'' (CI eklendiğinde geri gel).
+    \item \texttt{develop} branch oluştur, \texttt{main} = release branch olsun.
+\end{itemize}
+\textbf{Bittiği nasıl anlaşılır:} \texttt{git push origin main} reddediliyor; PR açmak zorundasın.
+
+\adim{Python virtual environment (lokal)}
+\textbf{Niye:} Sistem Python'una paket yüklemek başka projelerini bozar.\\
+\textbf{Önce:} Adım 1, 5.\\
+\textbf{Ne yapacaksın:}
+\begin{itemize}
+    \item Repo dizininde: \texttt{python -m venv .venv}
+    \item Windows: \texttt{.venv\textbackslash Scripts\textbackslash activate}
+    \item Mac/Linux: \texttt{source .venv/bin/activate}
+    \item \texttt{pip install --upgrade pip wheel}
+\end{itemize}
+\textbf{Bittiği nasıl anlaşılır:} Komut satırında \texttt{(.venv)} prefix görünüyor; \texttt{which python} → repo içinde.
+
+\adim{Mevcut bağımlılıkları tespit et + requirements.txt}
+\textbf{Niye:} Şu an hangi paketler kullanılıyor netleşmeli; sonra çoğalacak.\\
+\textbf{Önce:} Adım 7.\\
+\textbf{Ne yapacaksın:}
+\begin{itemize}
+    \item \texttt{pip install numpy pandas matplotlib openpyxl}
+    \item \texttt{pip freeze > requirements.txt}
+    \item \texttt{python simulation\_v3.py --scenario avm\_medium} → çalışıyor mu kontrol.
+\end{itemize}
+\textbf{Bittiği nasıl anlaşılır:} \texttt{simulation\_v3.py} hatasız çalışıyor, Excel + PNG çıkışları üretiliyor.
+
+\adim{.gitignore tamamla}
+\textbf{Niye:} \texttt{.venv}, derleme çıktıları, \texttt{\_\_pycache\_\_} repo'yu kirletmemeli.\\
+\textbf{Önce:} Adım 5.\\
+\textbf{Ne yapacaksın:}
+\begin{itemize}
+    \item \href{https://github.com/github/gitignore/blob/main/Python.gitignore}{GitHub Python.gitignore} kopyala.
+    \item Ek satırlar: \texttt{*.png}, \texttt{*.xlsx}, \texttt{*.pdf}, \texttt{.aux}, \texttt{.log}, \texttt{.toc}, \texttt{.out}, \texttt{output/}, \texttt{*.bak}.
+    \item Ek: \texttt{.idea/}, \texttt{.vscode/} (IDE).
+\end{itemize}
+\textbf{Bittiği nasıl anlaşılır:} \texttt{git status} → \texttt{.venv} ya da \texttt{\_\_pycache\_\_} listede yok.
+
+\adim{Black + Ruff + isort konfigürasyonu (\texttt{pyproject.toml})}
+\textbf{Niye:} Otomatik format = code review'da kavga yok.\\
+\textbf{Önce:} Adım 7.\\
+\textbf{Ne yapacaksın:}
+\begin{itemize}
+    \item Repo köküne \texttt{pyproject.toml}:
+\begin{lstlisting}
+[tool.black]
+line-length = 100
+target-version = ["py312"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+select = ["E", "F", "I", "N", "B", "UP"]
+
+[tool.isort]
+profile = "black"
+\end{lstlisting}
+    \item \texttt{pip install black ruff isort}
+    \item \texttt{black simulation\_v3.py \&\& ruff check simulation\_v3.py}
+\end{itemize}
+\textbf{Bittiği nasıl anlaşılır:} \texttt{black --check .} → hata yok.
+
+\adim{Pre-commit hooks}
+\textbf{Niye:} Commit anında otomatik format/lint çalışsın; ``yarın bakarım'' tuzağı engellensin.\\
+\textbf{Önce:} Adım 10.\\
+\textbf{Ne yapacaksın:}
+\begin{itemize}
+    \item \texttt{pip install pre-commit}
+    \item Repo köküne \texttt{.pre-commit-config.yaml}:
+\begin{lstlisting}
+repos:
+  - repo: https://github.com/psf/black
+    rev: 24.10.0
+    hooks: [{id: black}]
+  - repo: https://github.com/charliermarsh/ruff-pre-commit
+    rev: v0.7.0
+    hooks: [{id: ruff, args: [--fix]}]
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-added-large-files
+\end{lstlisting}
+    \item \texttt{pre-commit install}
+\end{itemize}
+\textbf{Bittiği nasıl anlaşılır:} \texttt{git commit} sırasında hooklar çalışıyor.
+
+\adim{GitHub Actions CI iskeleti}
+\textbf{Niye:} PR'da otomatik test çalışmadan kabul etme.\\
+\textbf{Önce:} Adım 11.\\
+\textbf{Ne yapacaksın:}
+\begin{itemize}
+    \item \texttt{.github/workflows/ci.yml} oluştur:
+\begin{lstlisting}
+name: CI
+on: [push, pull_request]
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.12'}
+      - run: pip install -r requirements.txt black ruff pytest
+      - run: black --check .
+      - run: ruff check .
+      - run: pytest -v
+\end{lstlisting}
+    \item Test dosyası daha yok; pytest fail eder, sonraki adımda eklenecek.
+\end{itemize}
+\textbf{Bittiği nasıl anlaşılır:} GitHub Actions sekmesinde workflow görünüyor.
+
+\adim{İlk pytest testi}
+\textbf{Niye:} CI yeşil olsun; alışkanlık başlasın.\\
+\textbf{Önce:} Adım 12.\\
+\textbf{Ne yapacaksın:}
+\begin{itemize}
+    \item \texttt{pip install pytest \&\& pip freeze > requirements.txt}
+    \item \texttt{tests/test\_smoke.py}:
+\begin{lstlisting}
+def test_smoke():
+    assert 1 + 1 == 2
+\end{lstlisting}
+    \item Commit + push.
+\end{itemize}
+\textbf{Bittiği nasıl anlaşılır:} GitHub Actions → CI yeşil.
+
+\adim{Founders' Agreement + ESOP}
+\textbf{Niye:} Kod yazmadan önce hukuki temeli at; ileride ortak ayrılığında repo kavgası çıkar.\\
+\textbf{Önce:} ---\\
+\textbf{Ne yapacaksın:}
+\begin{itemize}
+    \item Hukuki danışmanla 1 toplantı (Esin Avukatlık, Pekin \& Bayar, Akol Hukuk).
+    \item Konular: founder pay oranı, vesting (4 yıl, 1 yıl cliff), ESOP havuzu (\%10--15), yapım hakkı (founder ayrılırsa repo'yu çekemez), tahkim maddesi.
+    \item İmzalı PDF Drive/Notion'a; hard copy notere onay.
+\end{itemize}
+\textbf{Bittiği nasıl anlaşılır:} 3 kurucu ile imzalı + noter tasdikli sözleşme dosyada.
+
+\adim{Notion / Linear (proje yönetimi)}
+\textbf{Niye:} 180 adımı bireysel takip etmek imkansız; ekipte tek araç olmalı.\\
+\textbf{Önce:} ---\\
+\textbf{Ne yapacaksın:}
+\begin{itemize}
+    \item Linear (issue tracker) free plan, ya da Notion (notes + roadmap).
+    \item Bu doküman → Notion sayfasına; her adım = bir Linear issue.
+    \item Tag: \texttt{P0/P1/P2}, owner: 1 kurucu.
+\end{itemize}
+\textbf{Bittiği nasıl anlaşılır:} 180 adım Linear'da issue olarak görünüyor.
+
+% ===================================================================
+\newpage
+\section{FAZ 1 --- Mevcut Prototipi Proje Haline Getirme (Adım 16--30)}
+
+\textit{Bu fazda yeni özellik yazmıyorsun, mevcut tek dosyayı yeniden organize ediyorsun. Sıkıcı ama teknik borç vermeyen tek yol bu.}
+
+\adim{Hedef paket yapısı tasarımı}
+\textbf{Niye:} 880 satırlık tek dosya idare etmiyor; modüllere böleceğiz.\\
+\textbf{Önce:} Adım 7--13.\\
+\textbf{Ne yapacaksın:}
+\begin{itemize}
+    \item Hedef yapı:
+\begin{lstlisting}
+src/evlb/
+  __init__.py
+  models.py        # EV, EVModel, ChargingStation
+  scenarios.py     # ScenarioConfig, Scenarios, EnvironmentProfile
+  controllers/
+    __init__.py
+    base.py        # BaseController (ortak step)
+    unmanaged.py
+    managed.py
+    srpt.py
+    water_filling.py
+    dynamic_fair.py
+  simulation.py    # Simulation runner
+  data/
+    arrival_generator.py
+    background_load.py
+  io/
+    excel_export.py
+    dashboard.py
+    dataset_io.py
+  config.py        # config dataclasses
+  cli.py           # argparse → main()
+\end{lstlisting}
+\end{itemize}
+\textbf{Bittiği nasıl anlaşılır:} Diyagram dokümante edilmiş, ekip onaylı.
+
+\adim{\texttt{src/} layout + pyproject.toml package definition}
+\textbf{Niye:} Modern Python paket olarak yüklenebilmeli (\texttt{pip install -e .}).\\
+\textbf{Önce:} Adım 16.\\
+\textbf{Ne yapacaksın:}
+\begin{itemize}
+    \item \texttt{pyproject.toml}'a ekle:
+\begin{lstlisting}
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "evlb"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = [
+    "numpy>=1.26",
+    "pandas>=2.2",
+    "matplotlib>=3.8",
+    "openpyxl>=3.1",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+\end{lstlisting}
+    \item \texttt{pip install -e .[dev]} (development install).
+\end{itemize}
+\textbf{Bittiği nasıl anlaşılır:} \texttt{python -c "import evlb; print(evlb.\_\_file\_\_)"} → src/evlb/\_\_init\_\_.py path.
+
+\adim{\texttt{models.py} oluştur}
+\textbf{Niye:} Veri sınıflarını ayrı dosya = test edilebilir, importu hızlı.\\
+\textbf{Önce:} Adım 17.\\
+\textbf{Ne yapacaksın:}
+\begin{itemize}
+    \item \texttt{simulation\_v3.py} satır 29--133 (Enum'lar, EVModel, EV, ChargingStation, dataclass'lar) → \texttt{src/evlb/models.py}.
+    \item Kayıp olanları (StationType, EVState) da taşı.
+\end{itemize}
+\textbf{Bittiği nasıl anlaşılır:} \texttt{python -c "from evlb.models import EV, EVModel"} → hata yok.
+
+\adim{\texttt{config.py} (Scenario/Environment/Grid configleri)}
+\textbf{Niye:} Konfigürasyon ile veri modeli ayrı endişeler.\\
+\textbf{Önce:} Adım 18.\\
+\textbf{Ne yapacaksın:}
+\begin{itemize}
+    \item Satır 139--235 (\texttt{EnvironmentProfile, GridConfig, ArrivalPattern, FleetProfile, StationLayout, ScenarioConfig}) → \texttt{src/evlb/config.py}.
+    \item \texttt{from\_dict / to\_dict} metotlarını koru.
+\end{itemize}
+\textbf{Bittiği nasıl anlaşılır:} JSON serileştirme test edildi.
+
+\adim{\texttt{data/} alt-paketi (üreticiler)}
+\textbf{Niye:} Sentetik veri üretimi tek yerde; ileride gerçek veri loader buraya gelecek.\\
+\textbf{Önce:} Adım 19.\\
+\textbf{Ne yapacaksın:}
+\begin{itemize}
+    \item Satır 251--283: \texttt{ArrivalGenerator} → \texttt{src/evlb/data/arrival\_generator.py}.
+    \item Satır 285--300: \texttt{BackgroundLoadGenerator} → \texttt{src/evlb/data/background\_load.py}.
+    \item Satır 241--249: \texttt{\_DEFAULT\_EV\_MODELS} → \texttt{src/evlb/data/ev\_models.py}.
+\end{itemize}
+\textbf{Bittiği nasıl anlaşılır:} İmportlar çalışıyor; \texttt{ArrivalGenerator(...).generate\_arrivals(rng)} kullanılabiliyor.
+
+\adim{\texttt{scenarios.py}}
+\textbf{Niye:} 5 senaryo (avm/ofis/otel/hastane/havalimanı) tek yerde tanımlı.\\
+\textbf{Önce:} Adım 20.\\
+\textbf{Ne yapacaksın:}
+\begin{itemize}
+    \item Satır 302--463: \texttt{Scenarios} sınıfı → \texttt{src/evlb/scenarios.py}.
+\end{itemize}
+\textbf{Bittiği nasıl anlaşılır:} \texttt{Scenarios.avm\_medium()} sonuç veriyor.
+
+\adim{\texttt{BaseController} soyut sınıfı}
+\textbf{Niye:} 5 kontrolcüde \texttt{step()} aynı; sadece \texttt{allocate\_power()} değişiyor. Refactor zamanı.\\
+\textbf{Önce:} Adım 17.\\
+\textbf{Ne yapacaksın:}
+\begin{itemize}
+    \item \texttt{src/evlb/controllers/base.py}:
+\begin{lstlisting}
+from abc import ABC, abstractmethod
+
+class BaseController(ABC):
+    def __init__(self, stations, limit_policy, bg_load):
+        self.stations = stations
+        self.policy = limit_policy
+        self.bg_load = bg_load
+        self.queue = []
+        self.power_log = []
+        self.limit_log = []
+        self.completed = []
+        self.timeline_log = []
+
+    @abstractmethod
+    def allocate_power(self, minute: int) -> dict[str, float]:
+        ...
+
+    def step(self, minute: int):
+        # mevcut step() icindekileri buraya tasi
+        ...
+\end{lstlisting}
+\end{itemize}
+\textbf{Bittiği nasıl anlaşılır:} \texttt{BaseController}'dan abstract method olmadan instance oluşturulamıyor (\texttt{TypeError}).
+
+\adim{5 kontrolcüyü ayrı dosyalara böl + BaseController extend}
+\textbf{Niye:} Tek tek dosya = test ve gözden geçirme kolay.\\
+\textbf{Önce:} Adım 22.\\
+\textbf{Ne yapacaksın:}
+\begin{itemize}
+    \item \texttt{controllers/unmanaged.py, managed.py, srpt.py, water\_filling.py, dynamic\_fair.py}.
+    \item Her biri \texttt{from .base import BaseController} ile genişlet.
+    \item \texttt{controllers/\_\_init\_\_.py} → tüm sınıfları import.
+\end{itemize}
+\textbf{Bittiği nasıl anlaşılır:} \texttt{from evlb.controllers import SRPTController} çalışıyor.
+
+\adim{\texttt{simulation.py} ayrı modül}
+\textbf{Niye:} Runner ayrı yerde; entegrasyon testleri buradan başlar.\\
+\textbf{Önce:} Adım 23.\\
+\textbf{Ne yapacaksın:}
+\begin{itemize}
+    \item Satır 588--603: \texttt{Simulation} class → \texttt{src/evlb/simulation.py}.
+\end{itemize}
+\textbf{Bittiği nasıl anlaşılır:} \texttt{Simulation(ctrl, sched).run()} çalışıyor.
+
+\adim{\texttt{io/} alt-paketi (export)}
+\textbf{Niye:} Dashboard \& Excel; çıktı katmanı izole.\\
+\textbf{Önce:} Adım 24.\\
+\textbf{Ne yapacaksın:}
+\begin{itemize}
+    \item \texttt{io/excel\_export.py}: \texttt{build\_station\_matrix, export\_comparative\_excel, export\_multi\_controller\_excel}.
+    \item \texttt{io/dashboard.py}: \texttt{ExecutiveDashboard}.
+    \item \texttt{io/dataset\_io.py}: dataset.json okuma/yazma helper'ları.
+\end{itemize}
+\textbf{Bittiği nasıl anlaşılır:} İmport zinciri temiz, dairesel bağımlılık yok.
+
+\adim{\texttt{cli.py} \& entry point}
+\textbf{Niye:} \texttt{python -m evlb} ile çalışsın; eski main \texttt{simulation\_v3.py} yerine geçsin.\\
+\textbf{Önce:} Adım 25.\\
+\textbf{Ne yapacaksın:}
+\begin{itemize}
+    \item \texttt{src/evlb/cli.py}'a eski \texttt{main()} fonksiyonunu taşı.
+    \item \texttt{pyproject.toml}'a:
+\begin{lstlisting}
+[project.scripts]
+evlb = "evlb.cli:main"
+\end{lstlisting}
+    \item \texttt{pip install -e .} sonrası \texttt{evlb --scenario avm\_medium} → çalışmalı.
+\end{itemize}
+\textbf{Bittiği nasıl anlaşılır:} CLI komutu eski script'le aynı çıktıyı veriyor.
+
+\adim{Birim test (her controller için)}
+\textbf{Niye:} Refactor sonrası eskiyle aynı sonucu üretmek garanti olmalı.\\
+\textbf{Önce:} Adım 26.\\
+\textbf{Ne yapacaksın:}
+\begin{itemize}
+    \item \texttt{tests/controllers/test\_dynamic\_fair.py}: belirli input → beklenen \texttt{allocs} çıktı.
+    \item \texttt{tests/test\_simulation\_regression.py}: \texttt{dataset.json} ile çalıştır, eski Excel çıktısının aynısını üretiyor mu (golden file).
+    \item \texttt{pytest -v} → tüm yeşil.
+\end{itemize}
+\textbf{Bittiği nasıl anlaşılır:} \texttt{pytest --cov=evlb} → \%70+ coverage; CI yeşil.
+
+\adim{Eski \texttt{simulation\_v3.py}'yi sil + commit}
+\textbf{Niye:} Tek doğru kod kaynağı; çift bakım = bug.\\
+\textbf{Önce:} Adım 27.\\
+\textbf{Ne yapacaksın:}
+\begin{itemize}
+    \item Eski Excel/PNG çıktıları \texttt{output/} dizinine taşı, .gitignore'a ekle.
+    \item \texttt{git rm simulation\_v3.py}
+    \item \texttt{git commit -m "refactor: remove monolithic simulation\_v3, use evlb package"}
+\end{itemize}
+\textbf{Bittiği nasıl anlaşılır:} Repo'da \texttt{simulation\_v3.py} yok; \texttt{evlb} paketi tüm işi yapıyor.
+
+\adim{README'yi güncelle}
+\textbf{Niye:} 6 ay sonra senin de hatırlamayacağın komutlar; yeni hire 5 dakikada anlasın.\\
+\textbf{Önce:} Adım 28.\\
+\textbf{Ne yapacaksın:}
+\begin{itemize}
+    \item Bölümler: Proje nedir, kurulum (\texttt{pip install -e .}), kullanım (\texttt{evlb --scenario X}), test (\texttt{pytest}), proje yapısı, lisans.
+\end{itemize}
+\textbf{Bittiği nasıl anlaşılır:} README ile yeni biri 10 dakikada simülasyonu çalıştırabiliyor.
+
+\adim{İlk \texttt{v0.1.0} tag'i}
+\textbf{Niye:} Refactor öncesi prototipin çalışan haline geri dönebilmek için.\\
+\textbf{Önce:} Adım 29.\\
+\textbf{Ne yapacaksın:}
+\begin{itemize}
+    \item \texttt{git tag -a v0.1.0 -m "Refactored prototype baseline"}
+    \item \texttt{git push --tags}
+    \item GitHub Releases sayfasında release notes (kabaca yapılanlar listesi).
+\end{itemize}
+\textbf{Bittiği nasıl anlaşılır:} GitHub Releases → v0.1.0 görünüyor.
+
+% ===================================================================
+\newpage
+\section{FAZ 2 --- Maliyet \& Tarife Modülü (Adım 31--40)}
+
+\adim{TEDAŞ tarifesini araştır}
+\textbf{Niye:} Müşteriye ``\%X tasarruf'' demek için TL bilmen gerek.\\
+\textbf{Önce:} ---\\
+\textbf{Ne yapacaksın:}
+\begin{itemize}
+    \item EPDK tarife duyurularını oku: \href{https://www.epdk.gov.tr/Detay/Icerik/3-0-23-3/elektriktarifeler}{epdk.gov.tr/elektriktarifeler}.
+    \item Sanayi/ticari kademeli tarife (Gündüz 06--17, Puant 17--22, Gece 22--06).
+    \item Reaktif limit (\%20 endüktif, \%15 kapasitif), aşımda ceza.
+    \item Güç bedeli (TL/kW.ay) --- OG müşteri için.
+    \item Dağıtım + iletim bedeli, kaybı dahil.
+    \item KDV \%20.
+\end{itemize}
+\textbf{Bittiği nasıl anlaşılır:} 1 sayfalık özet (Notion).
+
+\adim{\texttt{tariff/} modülü iskeleti}
+\textbf{Niye:} Kod tabanlı tarife = sözleşmede ROI cümlesi.\\
+\textbf{Önce:} Adım 31.\\
+\textbf{Ne yapacaksın:}
+\begin{itemize}
+    \item \texttt{src/evlb/tariff/\_\_init\_\_.py}
+    \item \texttt{tariff/models.py}: \texttt{TariffSchedule} dataclass (TOU dilimleri, fiyatlar).
+    \item \texttt{tariff/tedas\_2026.json}: güncel fiyatlar.
+\end{itemize}
+\textbf{Bittiği nasıl anlaşılır:} \texttt{TariffSchedule.from\_json("tedas\_2026.json")} çalışıyor.
+
+\adim{Aktif enerji maliyet hesaplayıcısı}
+\textbf{Niye:} kWh × TL/kWh = ana maliyet kalemi.\\
+\textbf{Önce:} Adım 32.\\
+\textbf{Ne yapacaksın:}
+\begin{itemize}
+    \item \texttt{tariff/calculator.py}:
+\begin{lstlisting}
+def energy_cost(power_kw_per_min, tariff: TariffSchedule):
+    """power_kw_per_min: 1440 elemanli np.ndarray"""
+    energy_kwh = power_kw_per_min / 60.0  # dakika -> saat
+    cost = 0.0
+    for minute, kwh in enumerate(energy_kwh):
+        rate = tariff.rate_at_minute(minute)
+        cost += kwh * rate
+    return cost
+\end{lstlisting}
+    \item Test: 24 sa sabit 100 kW → toplam 2400 kWh → tarifeli toplam.
+\end{itemize}
+\textbf{Bittiği nasıl anlaşılır:} Test geçiyor; manuel kontrol matematiği uyuyor.
+
+\adim{Demand charge hesabı}
+\textbf{Niye:} OG müşteride ``aylık 15 dk maks güç'' büyük kalem; bizim algoritma bunu düşürüyor.\\
+\textbf{Önce:} Adım 33.\\
+\textbf{Ne yapacaksın:}
+\begin{itemize}
+    \item 15 dk pencere maks güç hesabı (rolling).
+    \item \texttt{demand\_charge\_cost(power\_log, tl\_per\_kw\_month)} → en yüksek 15-dk avg × tarife.
+\end{itemize}
+\textbf{Bittiği nasıl anlaşılır:} Yapay test girdisinde elde-hesap aynı.
+
+\adim{Reaktif enerji limit kontrolü}
+\textbf{Niye:} Şarj cihazları reaktif çekebilir; limit aşımı = ceza.\\
+\textbf{Önce:} Adım 33.\\
+\textbf{Ne yapacaksın:}
+\begin{itemize}
+    \item Şu an reaktif veri yok (sentetik); skeleton fonksiyon yaz: \texttt{reactive\_penalty(active\_kwh, reactive\_kvarh, limit=0.20)}.
+    \item Faz 6'da gerçek Janitza verisi eklenecek; o zaman doldurulur.
+\end{itemize}
+\textbf{Bittiği nasıl anlaşılır:} Skeleton var, TODO commenti.
+
+\adim{ROI Calculator}
+\textbf{Niye:} Müşteri ``geri ödeme süresi kaç ay?'' diye soruyor; cevap hazır olmalı.\\
+\textbf{Önce:} Adım 33--35.\\
+\textbf{Ne yapacaksın:}
+\begin{itemize}
+    \item \texttt{tariff/roi.py}:
+\begin{lstlisting}
+def simulate_roi(baseline_log, optimized_log, tariff,
+                 capex_tl, monthly_saas_tl):
+    monthly_saving = (
+        energy_cost(baseline_log, tariff)
+        + demand_charge_cost(baseline_log, ...)
+        - energy_cost(optimized_log, tariff)
+        - demand_charge_cost(optimized_log, ...)
+    ) * 30  # gunluk -> aylik
+    payback_months = capex_tl / max(0.001, monthly_saving - monthly_saas_tl)
+    return {"monthly_saving": monthly_saving, "payback": payback_months}
+\end{lstlisting}
+\end{itemize}
+\textbf{Bittiği nasıl anlaşılır:} 5 senaryo için \texttt{evlb compare-roi} → tablo basıyor.
+
+\adim{ROI raporunu Excel'e bağla}
+\textbf{Niye:} Müşteri toplantısında dashboard + Excel sayfasında somut TL.\\
+\textbf{Önce:} Adım 36.\\
+\textbf{Ne yapacaksın:}
+\begin{itemize}
+    \item \texttt{export\_multi\_controller\_excel} fonksiyonuna ROI sütunu ekle.
+    \item Aylık tasarruf TL, geri ödeme süresi.
+\end{itemize}
+\textbf{Bittiği nasıl anlaşılır:} Excel'de yeni ROI sütunu.
+
+\adim{ROI dashboard panel}
+\textbf{Niye:} PNG'da görsel etkili.\\
+\textbf{Önce:} Adım 36.\\
+\textbf{Ne yapacaksın:}
+\begin{itemize}
+    \item \texttt{ExecutiveDashboard}'a yeni panel: bar chart ``Aylık Tasarruf (TL)'' + payback period yazısı.
+\end{itemize}
+\textbf{Bittiği nasıl anlaşılır:} PNG dashboard'da panel görünüyor.
+
+\adim{Tarife versiyonlama}
+\textbf{Niye:} EPDK her çeyrek günceller; eski sözleşmelerde eski tarife kullanılır.\\
+\textbf{Önce:} Adım 32.\\
+\textbf{Ne yapacaksın:}
+\begin{itemize}
+    \item \texttt{tariff/tedas\_2026\_q1.json, tedas\_2026\_q2.json}.
+    \item \texttt{TariffSchedule.load\_for\_date(d: date)} → uygun versiyon.
+\end{itemize}
+\textbf{Bittiği nasıl anlaşılır:} Hangi tarifeyle hesaplandığı log'a yazılıyor.
+
+\adim{İhracat: ``Müşteri ROI Raporu'' PDF}
+\textbf{Niye:} Customer discovery toplantısında bırakılacak somut materyal.\\
+\textbf{Önce:} Adım 36--39.\\
+\textbf{Ne yapacaksın:}
+\begin{itemize}
+    \item LaTeX template (basit) → \texttt{evlb roi-report --site X} → \texttt{musteri\_X\_roi.pdf}.
+    \item İçerik: senaryo özeti, baseline TL, optimized TL, tasarruf, geri ödeme.
+\end{itemize}
+\textbf{Bittiği nasıl anlaşılır:} 1 saatlik AVM senaryosu için PDF rapor üretiliyor.
+
+% ===================================================================
+\newpage
+\section{FAZ 3 --- OCPP'yi Sıfırdan Öğrenme (Adım 41--60)}
+
+\textit{Bilgin sıfır demiştin --- bu fazda ``Open Charge Point Protocol''ü tanıyacaksın. Spec oku, lokal çalıştır, mesaj akışını gör.}
+
+\adim{OCPP nedir? --- 1 sayfa özet}
+\textbf{Niye:} Her şey burada başlıyor; net anlamadan kod yazma.\\
+\textbf{Önce:} ---\\
+\textbf{Ne yapacaksın:}
+\begin{itemize}
+    \item \href{https://www.openchargealliance.org/protocols/ocpp-16/}{Open Charge Alliance --- OCPP 1.6} sayfasını oku.
+    \item Kavramlar: Charge Point (CP), Central System (CSMS), heartbeat, transaction, MeterValues, ChargingProfile.
+    \item Notion'da 1 sayfalık özet yaz (kendin için).
+\end{itemize}
+\textbf{Bittiği nasıl anlaşılır:} ``\texttt{StartTransaction} ne işe yarar?'' sorusuna 30 saniyede cevap verebiliyorsun.
+
+\adim{OCPP 1.6 spec PDF'ini indir + flick et}
+\textbf{Niye:} Mesaj formatlarını referans olarak kullanacaksın.\\
+\textbf{Önce:} Adım 41.\\
+\textbf{Ne yapacaksın:}
+\begin{itemize}
+    \item OCA üyesi değilsen halka açık: \href{https://github.com/mobilityhouse/ocpp/tree/master/docs}{mobilityhouse/ocpp docs}.
+    \item Ya da OCA üyelik (\$1500/yıl) → resmi spec PDF.
+    \item İçindekilerle dolaş; her mesajın işlevini bir cümlede özetle.
+\end{itemize}
+\textbf{Bittiği nasıl anlaşılır:} 30 mesajın 10'unun ne işe yaradığını biliyorsun.
+
+\adim{WebSocket nedir? --- network bilgisi}
+\textbf{Niye:} OCPP WebSocket üstünde çalışır; HTTP'den farkını bilmen gerek.\\
+\textbf{Önce:} ---\\
+\textbf{Ne yapacaksın:}
+\begin{itemize}
+    \item MDN WebSocket guide: 30 dakika oku.
+    \item Anahtar: persistent connection, full-duplex, message-based.
+    \item Lokalde basit deneme: \texttt{websocat} CLI tool ile bağlan.
+\end{itemize}
+\textbf{Bittiği nasıl anlaşılır:} HTTP vs WebSocket farkını anlatabiliyorsun.
+
+\adim{JSON-RPC ve OCPP-J formatı}
+\textbf{Niye:} OCPP mesajları JSON; \texttt{[2, "msgId", "Action", \{payload\}]} formatı.\\
+\textbf{Önce:} Adım 42.\\
+\textbf{Ne yapacaksın:}
+\begin{itemize}
+    \item Spec'in 3.4 bölümü (Message Format).
+    \item 4 tip: CALL (2), CALLRESULT (3), CALLERROR (4), CALLPING (heartbeat değil).
+    \item Örnek BootNotification CALL/CALLRESULT manuel yazıp anla.
+\end{itemize}
+\textbf{Bittiği nasıl anlaşılır:} BootNotification mesajını elinle JSON yazabiliyorsun.
+
+\adim{\texttt{mobilityhouse/ocpp} kütüphanesini kur}
+\textbf{Niye:} Açık kaynak Python OCPP server/client; tekerlek icat etme.\\
+\textbf{Önce:} Adım 7, 44.\\
+\textbf{Ne yapacaksın:}
+\begin{itemize}
+    \item \texttt{pip install ocpp websockets}
+    \item GitHub repo'yu klonla: \texttt{git clone https://github.com/mobilityhouse/ocpp.git}
+    \item \texttt{examples/v16/charge\_point.py} ve \texttt{examples/v16/central\_system.py} oku.
+\end{itemize}
+\textbf{Bittiği nasıl anlaşılır:} İki dosyada da hangi handler nerede biliyorsun.
+
+\adim{Lokalde örnek CSMS çalıştır}
+\textbf{Niye:} Sahte bir charger bağlanmadan önce server hazır olmalı.\\
+\textbf{Önce:} Adım 45.\\
+\textbf{Ne yapacaksın:}
+\begin{itemize}
+    \item \texttt{python examples/v16/central\_system.py}
+    \item Çıktı: ``Server starting on \texttt{ws://0.0.0.0:9000}''.
+\end{itemize}
+\textbf{Bittiği nasıl anlaşılır:} Server log'unda hata yok.
+
+\adim{Sahte charger çalıştır + ilk \texttt{BootNotification}}
+\textbf{Niye:} Mesaj akışını canlı görmek = anlamak.\\
+\textbf{Önce:} Adım 46.\\
+\textbf{Ne yapacaksın:}
+\begin{itemize}
+    \item Yeni terminal: \texttt{python examples/v16/charge\_point.py}
+    \item CSMS log'unda: \texttt{>> [2,...,"BootNotification",\{...\}]} \\ \texttt{<< [3,...,\{"status":"Accepted"\}]}.
+\end{itemize}
+\textbf{Bittiği nasıl anlaşılır:} İlk gerçek mesaj akışını gördün.
+
+\adim{\texttt{Heartbeat} ve \texttt{StatusNotification}}
+\textbf{Niye:} Charger ``hayatta'' demeyi ve durum değişimini bildirmeyi öğreniyor.\\
+\textbf{Önce:} Adım 47.\\
+\textbf{Ne yapacaksın:}
+\begin{itemize}
+    \item Sahte charger'a heartbeat döngüsü ekle (her 30 sn).
+    \item Manuel: socket çıkarılmış simülasyonu için \texttt{StatusNotification(status="Available")}.
+\end{itemize}
+\textbf{Bittiği nasıl anlaşılır:} Server log'unda her 30 sn heartbeat görünüyor.
+
+\adim{Authorize / StartTransaction / StopTransaction akışı}
+\textbf{Niye:} Şarj seansının başı/sonu; bu olmadan paralı şarj olmaz.\\
+\textbf{Önce:} Adım 48.\\
+\textbf{Ne yapacaksın:}
+\begin{itemize}
+    \item Sahte charger:
+        \begin{itemize}
+            \item RFID = ``ABC123'' ile \texttt{Authorize}.
+            \item CSMS \texttt{Accepted} dönüyor.
+            \item \texttt{StartTransaction(meterStart=12345)}.
+            \item \texttt{StopTransaction(meterStop=12500)}.
+        \end{itemize}
+    \item CSMS log incele.
+\end{itemize}
+\textbf{Bittiği nasıl anlaşılır:} 4 mesaj sırayla görünüyor; CSMS transaction\_id atıyor.
+
+\adim{\texttt{MeterValues} mesajı}
+\textbf{Niye:} Anlık güç telemetrisi; algoritmanın asıl input'u.\\
+\textbf{Önce:} Adım 49.\\
+\textbf{Ne yapacaksın:}
+\begin{itemize}
+    \item Sahte charger'da her 60 sn \texttt{MeterValues} gönder. Sampled values: \texttt{Power.Active.Import, Energy.Active.Import.Register, Voltage, Current.Import}.
+    \item \texttt{measurand}, \texttt{unit}, \texttt{location} alanlarını anla.
+\end{itemize}
+\textbf{Bittiği nasıl anlaşılır:} Server'da telemetry değerleri görünüyor (sahte de olsa).
+
+\adim{\texttt{SetChargingProfile} --- bizim için kritik mesaj}
+\textbf{Niye:} \textbf{Ana mesleğimiz} bu --- gücü düşürme/yükseltme komutu.\\
+\textbf{Önce:} Adım 50.\\
+\textbf{Ne yapacaksın:}
+\begin{itemize}
+    \item CSMS'den charger'a \texttt{SetChargingProfile} gönder:
+        \begin{itemize}
+            \item \texttt{chargingProfilePurpose}: \texttt{TxProfile} (transaction-bazlı).
+            \item \texttt{chargingProfileKind}: \texttt{Absolute}.
+            \item \texttt{chargingSchedule}: \texttt{startSchedule, chargingRateUnit="W"}, \texttt{chargingSchedulePeriod=[\{startPeriod:0, limit:11000\}]}.
+        \end{itemize}
+    \item Sahte charger'ın bu mesajı aldığını log'la.
+\end{itemize}
+\textbf{Bittiği nasıl anlaşılır:} 11 kW limit gönderildi, sahte charger \texttt{Accepted} döndü.
+
+\adim{ChargingProfile yapısını derinleşmeli oku}
+\textbf{Niye:} Statik limit basit; dinamik (zaman-değişken) profil ileride gerekecek.\\
+\textbf{Önce:} Adım 51.\\
+\textbf{Ne yapacaksın:}
+\begin{itemize}
+    \item Spec'ın \texttt{Smart Charging} eki (Annex B in 1.6).
+    \item Stack levels (1-9), \texttt{TxDefaultProfile} vs \texttt{TxProfile} farkı.
+    \item \texttt{schedulePeriod} array ile zaman-değişken: 15 dk 11 kW, sonra 15 dk 22 kW.
+\end{itemize}
+\textbf{Bittiği nasıl anlaşılır:} Multi-period schedule yazıp gönderebiliyorsun.
+
+\adim{\texttt{RemoteStartTransaction} \& \texttt{RemoteStopTransaction}}
+\textbf{Niye:} Kullanıcı app'ten ``başlat'' demeden charger'ı uzaktan başlatma.\\
+\textbf{Önce:} Adım 49.\\
+\textbf{Ne yapacaksın:}
+\begin{itemize}
+    \item CSMS'den \texttt{RemoteStartTransaction(idTag, connectorId)}.
+    \item Sahte charger \texttt{Accepted} → kendiliğinden \texttt{StartTransaction}.
+\end{itemize}
+\textbf{Bittiği nasıl anlaşılır:} Mesaj zinciri akıyor.
+
+\adim{Birden çok charger aynı server'a}
+\textbf{Niye:} Multi-charger yönetimi gerçek senaryomuz.\\
+\textbf{Önce:} Adım 50.\\
+\textbf{Ne yapacaksın:}
+\begin{itemize}
+    \item 5 sahte charger lansé et farklı portlardan.
+    \item CSMS'de her birinin kayıtlı olduğunu gör.
+    \item Her birine farklı \texttt{SetChargingProfile} gönder.
+\end{itemize}
+\textbf{Bittiği nasıl anlaşılır:} 5 charger 5 farklı limit alıyor.
+
+\adim{OCPP 2.0.1 farklarını oku (yüzeysel)}
+\textbf{Niye:} İleride 2.0 desteği gerekli; ne değişti bilmek iyi.\\
+\textbf{Önce:} Adım 41.\\
+\textbf{Ne yapacaksın:}
+\begin{itemize}
+    \item Mobilityhouse 2.0.1 docs.
+    \item Anahtar farklar: \texttt{TransactionEvent} tek mesaj (Start/Stop birleşti), security profile zorunlu, ISO 15118 desteği, modüler özellik (functional groups).
+    \item Tablo: 1.6 mesaj → 2.0.1 karşılığı.
+\end{itemize}
+\textbf{Bittiği nasıl anlaşılır:} Tablo Notion'da, ekiple paylaşıldı.
+
+\adim{\texttt{SteVe} (Java) çalıştır --- referans CSMS}
+\textbf{Niye:} Açık kaynak hazır CSMS; admin paneli olan; öğrenmek için iyi referans.\\
+\textbf{Önce:} ---\\
+\textbf{Ne yapacaksın:}
+\begin{itemize}
+    \item \texttt{git clone https://github.com/steve-community/steve.git}
+    \item Docker ile çalıştır: \texttt{docker compose up}.
+    \item Web UI: \texttt{localhost:8180/manager}.
+    \item Sahte charger oluştur, mesaj akışını UI'dan izle.
+\end{itemize}
+\textbf{Bittiği nasıl anlaşılır:} SteVe UI'da heartbeat'leri görüyorsun.
+
+\adim{OCPP test tool'u (OCA test tool ya da MaEVe)}
+\textbf{Niye:} Üreticinin charger'ı OCPP'ye uyuyor mu test etmek için.\\
+\textbf{Önce:} Adım 47.\\
+\textbf{Ne yapacaksın:}
+\begin{itemize}
+    \item \href{https://github.com/thoughtworks/maeve-csms}{ThoughtWorks MaEVe} klonla.
+    \item Test senaryolarını oku.
+    \item Bizim yazılımımızla bunu çalıştır → uyumluluk haritası çıkar.
+\end{itemize}
+\textbf{Bittiği nasıl anlaşılır:} Test çıktısı dosyaya kaydedildi.
+
+\adim{Kendi minimal OCPP server'ımızı yaz}
+\textbf{Niye:} Sonunda \texttt{evlb}'ye entegre etmemiz lazım; \texttt{mobilityhouse/ocpp}'yi kullanarak kendi sarmalayıcımızı yaz.\\
+\textbf{Önce:} Adım 47--50.\\
+\textbf{Ne yapacaksın:}
+\begin{itemize}
+    \item \texttt{src/evlb/ocpp/} alt-paketi.
+    \item \texttt{ocpp/server.py}: WebSocket endpoint, charger kayıt yönetimi.
+    \item \texttt{ocpp/charger.py}: charger sınıfı, \texttt{send\_charging\_profile(limit\_kw)} metodu.
+    \item Sahte charger'ları artık \texttt{evlb}'ye bağla.
+\end{itemize}
+\textbf{Bittiği nasıl anlaşılır:} \texttt{python -m evlb.ocpp.server} → 5 sahte charger bağlanıyor.
+
+\adim{OCPP server'ı algoritma çıkışıyla bağla}
+\textbf{Niye:} Sim'deki \texttt{allocate\_power} sonucunu gerçek \texttt{SetChargingProfile} mesajına dönüştürmek.\\
+\textbf{Önce:} Adım 59 ve Faz 1.\\
+\textbf{Ne yapacaksın:}
+\begin{itemize}
+    \item Bir ``loop'' yaz: her 60 sn → \texttt{DynamicFairController.allocate\_power} → her charger'a \texttt{SetChargingProfile}.
+    \item \texttt{MeterValues}'i sahte charger'dan oku, EV'nin \texttt{current\_soc}'unu güncelle.
+\end{itemize}
+\textbf{Bittiği nasıl anlaşılır:} 30 dk simülasyon: charger'a değişen limitler gidiyor; SoC artıyor.
+
+% ===================================================================
+\newpage
+\section{FAZ 4 --- Donanım Lab Kurulumu (Adım 61--75)}
+
+\textit{Sahte charger'ın ötesine geç --- gerçek charger'a bağlan.}
+
+\adim{Lab fiziksel ortam}
+\textbf{Niye:} Charger 380V trifaze elektrik ister; ev prizine bağlayamazsın.\\
+\textbf{Önce:} ---\\
+\textbf{Ne yapacaksın:}
+\begin{itemize}
+    \item Co-working / küçük ofis kirala (50K--150K TL/ay alanına göre).
+    \item Trifaze 32A hat çek (elektrikçi: 5--15K TL).
+    \item AG pano + sigorta + topraklama.
+\end{itemize}
+\textbf{Bittiği nasıl anlaşılır:} Elektrikçi raporu (TEDAŞ uyumu).
+
+\adim{Charger satın al / kirala}
+\textbf{Niye:} Gerçek üzerinde test olmadan müşteriye gidemezsin.\\
+\textbf{Önce:} Adım 61.\\
+\textbf{Ne yapacaksın:}
+\begin{itemize}
+    \item Vestel ile temas: ``demo birimi ödünç + satış kanalı potansiyeli.''
+    \item Alternatif: 2. el ABB Terra (sahibinden, satılan istasyondan) 80--150K TL.
+    \item Spec: en az OCPP 1.6J Smart Charging Profile.
+\end{itemize}
+\textbf{Bittiği nasıl anlaşılır:} Charger labda, fiziksel teslim alındı.
+
+\adim{EV emülatör / yük bankası}
+\textbf{Niye:} Gerçek araba kullanmak güvenlik+lojistik kabusu; emülatör DC çıkışı yükler.\\
+\textbf{Önce:} Adım 62.\\
+\textbf{Ne yapacaksın:}
+\begin{itemize}
+    \item EV simülatör cihazı: comemso CCS 100, Keysight RP7900 (pahalı).
+    \item Bütçe çözümü: DC yük direnci paneli + akım sınırlayıcı (5--15K TL).
+    \item Riski: charger ``araç bağlı değil'' diye yazar; CP/PP dirençleriyle aldatma şart.
+\end{itemize}
+\textbf{Bittiği nasıl anlaşılır:} Charger ``Charging'' moduna geçiyor.
+
+\adim{Charger'ı internet'e bağla}
+\textbf{Niye:} OCPP için CSMS URL'ine erişim lazım.\\
+\textbf{Önce:} Adım 62.\\
+\textbf{Ne yapacaksın:}
+\begin{itemize}
+    \item Charger config menüsünden:
+        \begin{itemize}
+            \item Network: DHCP veya statik IP.
+            \item OCPP: \texttt{ws://your-laptop-ip:9000/<charger\_id>}.
+            \item Heartbeat interval: 60 sn.
+        \end{itemize}
+    \item Lokal test için ngrok ya da port forwarding.
+\end{itemize}
+\textbf{Bittiği nasıl anlaşılır:} Charger ekranında ``Connected'' yazıyor.
+
+\adim{İlk gerçek \texttt{BootNotification} --- şampanya anı}
+\textbf{Niye:} Bu noktada teorik bilgi pratiğe dönüştü; semboliK olarak büyük adım.\\
+\textbf{Önce:} Adım 64, Faz 3.\\
+\textbf{Ne yapacaksın:}
+\begin{itemize}
+    \item \texttt{evlb.ocpp.server} koş.
+    \item Charger'ı aç → \texttt{BootNotification} log'a düşmeli.
+    \item Vendor adı, modeli, firmware sürümü kaydet.
+\end{itemize}
+\textbf{Bittiği nasıl anlaşılır:} Log'da gerçek vendor (örn ``Vestel'') görünüyor; foto çek; ekibe paylaş.
+
+\adim{İlk gerçek \texttt{StatusNotification}}
+\textbf{Niye:} Charger soketinin durumunu doğru okuyabiliyor muyuz.\\
+\textbf{Önce:} Adım 65.\\
+\textbf{Ne yapacaksın:}
+\begin{itemize}
+    \item Soket boş → \texttt{Available}.
+    \item Yük bankası takılı → \texttt{Preparing} veya \texttt{Charging}.
+    \item Hata → \texttt{Faulted}.
+\end{itemize}
+\textbf{Bittiği nasıl anlaşılır:} 3 farklı durum log'a düştü.
+
+\adim{İlk gerçek \texttt{StartTransaction}}
+\textbf{Niye:} Şarj başlatma akışını test.\\
+\textbf{Önce:} Adım 66.\\
+\textbf{Ne yapacaksın:}
+\begin{itemize}
+    \item RFID kart oku (charger'da varsa) ya da app/QR.
+    \item \texttt{Authorize} → \texttt{Accepted}.
+    \item \texttt{StartTransaction} → \texttt{Accepted, transactionId=N}.
+\end{itemize}
+\textbf{Bittiği nasıl anlaşılır:} Transaction ID atandı.
+
+\adim{Gerçek \texttt{MeterValues}}
+\textbf{Niye:} Anlık güç telemetrisi gerçek değer geliyor mu kontrol.\\
+\textbf{Önce:} Adım 67.\\
+\textbf{Ne yapacaksın:}
+\begin{itemize}
+    \item Charger'a yük bağla.
+    \item Her 60 sn \texttt{MeterValues} gelmeli.
+    \item Power.Active.Import değerini multimetreyle çapraz doğrula.
+\end{itemize}
+\textbf{Bittiği nasıl anlaşılır:} Telemetry $\pm$\%5 doğru.
+
+\adim{İlk gerçek \texttt{SetChargingProfile}}
+\textbf{Niye:} Power kontrolünün gerçekten çalıştığını kanıtla.\\
+\textbf{Önce:} Adım 68.\\
+\textbf{Ne yapacaksın:}
+\begin{itemize}
+    \item Charger 11 kW çekiyorken \texttt{SetChargingProfile(limit=5500W)} gönder.
+    \item 30 sn içinde MeterValues 5.5 kW'a düşmeli.
+    \item Tekrar 22 kW limit gönder, yükselsin.
+\end{itemize}
+\textbf{Bittiği nasıl anlaşılır:} Charger limit'e uyuyor (kanıt: log + multimeter).
+
+\adim{Power Quality Analyzer (Janitza UMG) bağla}
+\textbf{Niye:} Saha çıkışı gücü ölçecek (gerçek pilotta vazgeçilmez).\\
+\textbf{Önce:} Adım 61.\\
+\textbf{Ne yapacaksın:}
+\begin{itemize}
+    \item Janitza UMG 605 (yaklaşık 35K TL) sipariş.
+    \item Akım trafosu (CT) 100/5A 3 adet (her faza 1).
+    \item Pano içinde montaj (elektrikçi).
+    \item Modbus TCP ayarla.
+\end{itemize}
+\textbf{Bittiği nasıl anlaşılır:} Janitza ekranda 3 faz gerilim/akım gösteriyor.
+
+\adim{Modbus TCP'den veri oku --- Python}
+\textbf{Niye:} Janitza verisini yazılıma çekmeden işe yaramaz.\\
+\textbf{Önce:} Adım 70.\\
+\textbf{Ne yapacaksın:}
+\begin{itemize}
+    \item \texttt{pip install pymodbus}
+    \item \texttt{src/evlb/meter/janitza.py}:
+\begin{lstlisting}
+from pymodbus.client import ModbusTcpClient
+
+class JanitzaUMG605:
+    def __init__(self, host, port=502):
+        self.client = ModbusTcpClient(host, port)
+
+    def read_total_power(self) -> float:
+        # Janitza register 19026 = total active power
+        result = self.client.read_holding_registers(19026, 2)
+        return self._decode_float(result.registers)
+\end{lstlisting}
+    \item Janitza Modbus register tablosu (PDF dökümanlarında).
+\end{itemize}
+\textbf{Bittiği nasıl anlaşılır:} \texttt{print(meter.read\_total\_power())} → fiziksel yük ile uyumlu.
+
+\adim{Harmonik (THD) okuma}
+\textbf{Niye:} Faz 4 diferansiyatörü için altyapı.\\
+\textbf{Önce:} Adım 71.\\
+\textbf{Ne yapacaksın:}
+\begin{itemize}
+    \item Janitza THD\_V, THD\_I register'ları (her faz).
+    \item \texttt{read\_thd\_voltage(phase: int)} ekle.
+    \item Charger çalışıyorken/kapalıyken THD farkını ölç.
+\end{itemize}
+\textbf{Bittiği nasıl anlaşılır:} Charger DC modda → THD\_I anlamlı yükseldi (diyelim \%3 → \%15).
+
+\adim{IoT Gateway (Raspberry Pi)}
+\textbf{Niye:} Saha mahallinde verileri toplayıp buluta atan bir cihaz lazım.\\
+\textbf{Önce:} Adım 71.\\
+\textbf{Ne yapacaksın:}
+\begin{itemize}
+    \item Raspberry Pi 4 (8GB) + 32GB SD + endüstriyel kasa (DIN ray).
+    \item Raspberry Pi OS Lite (headless).
+    \item SSH aç, Tailscale (mesh VPN) kur.
+    \item Janitza IP'sine erişebilir mi test.
+\end{itemize}
+\textbf{Bittiği nasıl anlaşılır:} Pi'dan \texttt{ping janitza-ip} cevap veriyor.
+
+\adim{MQTT broker --- ingestion noktası}
+\textbf{Niye:} Telemetri akışı için standart kuyruk.\\
+\textbf{Önce:} Adım 73.\\
+\textbf{Ne yapacaksın:}
+\begin{itemize}
+    \item Pi'ya \texttt{docker run -d -p 1883:1883 -p 9001:9001 eclipse-mosquitto}
+    \item Lokalden \texttt{mosquitto\_sub -h pi-ip -t '\#'}.
+    \item Pi'ya bir publisher script: Janitza'dan oku, MQTT'ye yayınla.
+\end{itemize}
+\textbf{Bittiği nasıl anlaşılır:} \texttt{mosquitto\_sub} terminal'inde her saniye telemetry görüyorsun.
+
+\adim{Endüstriyel switch + ağ izolasyonu}
+\textbf{Niye:} OT (charger, sayaç) ile IT (laptop, ofis) ağı ayrı olmalı.\\
+\textbf{Önce:} Adım 61.\\
+\textbf{Ne yapacaksın:}
+\begin{itemize}
+    \item MOXA EDS-405A (5 portlu yönetilebilir).
+    \item VLAN: VLAN 10 = OT (charger + Janitza), VLAN 20 = IT (Pi gateway).
+    \item Pi sadece routing yapıyor.
+\end{itemize}
+\textbf{Bittiği nasıl anlaşılır:} Ofis laptop'un charger'a doğrudan ulaşamıyor, Pi üzerinden geçiyor.
+
+% ===================================================================
+\newpage
+\section{FAZ 5 --- Backend MVP (Adım 76--100)}
+
+\textit{Şimdi sadece çalışan bir bilgisayar değil, çoklu kullanıcılı bulut servisi inşa ediyoruz.}
+
+\adim{Mimari kararlar dokümanı}
+\textbf{Niye:} Stack seçimi sonradan ağrıyor; karar gerekçeli yazılı olmalı.\\
+\textbf{Önce:} ---\\
+\textbf{Ne yapacaksın:}
+\begin{itemize}
+    \item ADR (Architecture Decision Record) klasörü: \texttt{docs/adr/0001-backend-stack.md}.
+    \item Karar: FastAPI + Postgres + Redis + Celery + TimescaleDB. Alternatifler ve ret nedenleri.
+\end{itemize}
+\textbf{Bittiği nasıl anlaşılır:} ADR dosyası repo'da.
+
+\adim{FastAPI proje skeleton}
+\textbf{Niye:} REST API'nin temeli.\\
+\textbf{Önce:} Adım 76.\\
+\textbf{Ne yapacaksın:}
+\begin{itemize}
+    \item Yeni repo: \texttt{evlb-api} (ya da monorepo'da \texttt{apps/api/}).
+    \item \texttt{pip install fastapi uvicorn[standard] sqlmodel alembic httpx}
+    \item \texttt{src/api/main.py}:
+\begin{lstlisting}
+from fastapi import FastAPI
+
+app = FastAPI(title="EV Load Balancing API")
+
+@app.get("/health")
+def health():
+    return {"status": "ok"}
+\end{lstlisting}
+    \item \texttt{uvicorn api.main:app --reload}
+\end{itemize}
+\textbf{Bittiği nasıl anlaşılır:} \texttt{curl localhost:8000/health} → JSON dönüyor.
+
+\adim{PostgreSQL kurulumu (Docker)}
+\textbf{Niye:} Lokal DB; üretimde aynısı.\\
+\textbf{Önce:} ---\\
+\textbf{Ne yapacaksın:}
+\begin{itemize}
+    \item \texttt{docker compose} dosyası oluştur (\texttt{infra/docker-compose.dev.yml}):
+\begin{lstlisting}
+services:
+  postgres:
+    image: timescale/timescaledb:latest-pg16
+    environment:
+      POSTGRES_PASSWORD: dev
+      POSTGRES_DB: evlb
+    ports: ["5432:5432"]
+    volumes: [pgdata:/var/lib/postgresql/data]
+volumes:
+  pgdata:
+\end{lstlisting}
+    \item \texttt{docker compose up -d}
+\end{itemize}
+\textbf{Bittiği nasıl anlaşılır:} \texttt{psql -h localhost -U postgres -d evlb} bağlanıyor.
+
+\adim{SQLModel + Alembic migration}
+\textbf{Niye:} ORM + schema versiyonlama.\\
+\textbf{Önce:} Adım 78.\\
+\textbf{Ne yapacaksın:}
+\begin{itemize}
+    \item \texttt{src/api/db/models.py}: \texttt{Tenant, Site, Charger, ChargingSession, MeterReading} tabloları.
+    \item \texttt{alembic init} → ilk migration.
+    \item \texttt{alembic revision --autogenerate -m "initial"}
+    \item \texttt{alembic upgrade head}
+\end{itemize}
+\textbf{Bittiği nasıl anlaşılır:} Postgres'te tablolar görünüyor.
+
+\adim{Multi-tenant kavramı (tenant\_id sütunu)}
+\textbf{Niye:} Bir backend'de N müşteri.\\
+\textbf{Önce:} Adım 79.\\
+\textbf{Ne yapacaksın:}
+\begin{itemize}
+    \item Her tablo: \texttt{tenant\_id: UUID} sütunu, indexli.
+    \item Postgres RLS (Row-Level Security) policy: ``\texttt{tenant\_id = current\_setting('app.tenant\_id')}''.
+    \item Test: tenant A'nın verisi tenant B'ye görünmüyor.
+\end{itemize}
+\textbf{Bittiği nasıl anlaşılır:} Manuel test geçiyor; yetkisiz select boş dönüyor.
+
+\adim{İlk CRUD endpoint --- Site}
+\textbf{Niye:} Müşteri ``saha'' kavramı; her şey buradan dallanıyor.\\
+\textbf{Önce:} Adım 80.\\
+\textbf{Ne yapacaksın:}
+\begin{itemize}
+    \item \texttt{POST /sites}, \texttt{GET /sites}, \texttt{GET /sites/\{id\}}, \texttt{PATCH /sites/\{id\}}, \texttt{DELETE /sites/\{id\}}.
+    \item Pydantic şemalar (\texttt{SiteCreate, SiteRead, SiteUpdate}).
+\end{itemize}
+\textbf{Bittiği nasıl anlaşılır:} Swagger \texttt{/docs} → 5 endpoint görünüyor; deneme POST'u sonra GET ile listede.
+
+\adim{Charger CRUD}
+\textbf{Niye:} Site'in altındaki cihazlar.\\
+\textbf{Önce:} Adım 81.\\
+\textbf{Ne yapacaksın:}
+\begin{itemize}
+    \item \texttt{POST /sites/\{id\}/chargers, ...}.
+    \item Charger fields: vendor, model, max\_power\_kw, ocpp\_id (charger \texttt{BootNotification}'dan eşleşecek).
+\end{itemize}
+\textbf{Bittiği nasıl anlaşılır:} Swagger'dan charger ekleyip listeleyebiliyorsun.
+
+\adim{Auth: Keycloak veya Auth0}
+\textbf{Niye:} Login olmadan API açık değildir; multi-tenant için kullanıcı/rol gerekli.\\
+\textbf{Önce:} Adım 80.\\
+\textbf{Ne yapacaksın:}
+\begin{itemize}
+    \item Keycloak (self-hosted Docker) veya Auth0 (free 7K kullanıcı).
+    \item OAuth2 flow: client credentials (M2M) + authorization code (kullanıcı).
+    \item FastAPI middleware: \texttt{verify\_jwt} dependency.
+    \item Roller: \texttt{tenant\_admin, operator, viewer}.
+\end{itemize}
+\textbf{Bittiği nasıl anlaşılır:} Auth header olmadan endpoint 401 dönüyor; valid token ile 200.
+
+\adim{OCPP servisi backend ile entegrasyon}
+\textbf{Niye:} Faz 3'teki OCPP server'ı API ile birleştir.\\
+\textbf{Önce:} Adım 60, 83.\\
+\textbf{Ne yapacaksın:}
+\begin{itemize}
+    \item Charger \texttt{BootNotification} → DB'de Charger kaydını bul (ocpp\_id ile) → \texttt{accepted}/\texttt{rejected}.
+    \item Yeni charger için ``pending'' durumu, admin onayı.
+    \item \texttt{StatusNotification} → DB güncellenir.
+    \item \texttt{MeterValues} → \texttt{MeterReading} tablosuna insert.
+\end{itemize}
+\textbf{Bittiği nasıl anlaşılır:} Sahte charger backend'e bağlanıyor, DB güncelleniyor.
+
+\adim{TimescaleDB hypertable for telemetri}
+\textbf{Niye:} Dakikalık veri 1 sahada yılda 525K satır × 100 saha = 52M satır; düz Postgres yorulur.\\
+\textbf{Önce:} Adım 84.\\
+\textbf{Ne yapacaksın:}
+\begin{itemize}
+    \item \texttt{SELECT create\_hypertable('meter\_readings', 'timestamp');}
+    \item Kompresyon politikası: 30 günden eski veri sıkıştır.
+    \item Retention: 24 ay sonra otomatik sil.
+\end{itemize}
+\textbf{Bittiği nasıl anlaşılır:} Hypertable görünüyor; chunked storage kullanıyor.
+
+\adim{Redis kurulumu \& cache pattern}
+\textbf{Niye:} Sık okunan veriler (config, son telemetri snapshot) DB'yi yormasın.\\
+\textbf{Önce:} ---\\
+\textbf{Ne yapacaksın:}
+\begin{itemize}
+    \item Docker compose'a Redis 7 ekle.
+    \item \texttt{aioredis} client.
+    \item Cache wrapper: \texttt{@cache(ttl=60)} decorator.
+\end{itemize}
+\textbf{Bittiği nasıl anlaşılır:} Endpoint ikinci çağrıda cache'den dönüyor (log).
+
+\adim{Celery task queue}
+\textbf{Niye:} Algoritma her 60 sn çalışacak --- async task gerekli.\\
+\textbf{Önce:} Adım 86.\\
+\textbf{Ne yapacaksın:}
+\begin{itemize}
+    \item \texttt{pip install celery[redis]}
+    \item \texttt{src/api/tasks.py}: \texttt{@celery.task} decorated fonksiyonlar.
+    \item Worker: \texttt{celery -A api.tasks worker --beat}.
+    \item İlk task: ``her 60 sn her aktif site için \texttt{run\_optimization}.''
+\end{itemize}
+\textbf{Bittiği nasıl anlaşılır:} Worker log'unda her 60 sn task tetikleniyor.
+
+\adim{Algoritma core'unu API'ye port et}
+\textbf{Niye:} Faz 1 sonu \texttt{evlb} paketi var; API onu kullanmalı.\\
+\textbf{Önce:} Adım 30, 87.\\
+\textbf{Ne yapacaksın:}
+\begin{itemize}
+    \item API \texttt{requirements.txt}'a \texttt{evlb} ekle (path install).
+    \item \texttt{run\_optimization(site\_id)} task: DB'den state oku → \texttt{DynamicFairController.allocate\_power} çağır → OCPP service ile \texttt{SetChargingProfile} push.
+\end{itemize}
+\textbf{Bittiği nasıl anlaşılır:} Manuel \texttt{run\_optimization(1)} → sahte charger'lara dağıtım gönderiliyor.
+
+\adim{Logging --- structured (JSON)}
+\textbf{Niye:} Production'da metin log değil, queryable JSON.\\
+\textbf{Önce:} Adım 77.\\
+\textbf{Ne yapacaksın:}
+\begin{itemize}
+    \item \texttt{pip install structlog}
+    \item Tüm log'lar JSON: \texttt{\{ts, level, msg, tenant\_id, site\_id, ...\}}.
+    \item Request ID middleware (correlation ID).
+\end{itemize}
+\textbf{Bittiği nasıl anlaşılır:} Log'lar geçerli JSON.
+
+\adim{Sentry entegrasyonu (error tracking)}
+\textbf{Niye:} Production hatasını görmek için.\\
+\textbf{Önce:} Adım 89.\\
+\textbf{Ne yapacaksın:}
+\begin{itemize}
+    \item Sentry hesabı (free 5K events/ay).
+    \item \texttt{sentry-sdk[fastapi]} kur.
+    \item Test: kasıtlı exception → Sentry'de görünüyor.
+\end{itemize}
+\textbf{Bittiği nasıl anlaşılır:} Sentry dashboard'da test hatası.
+
+\adim{API integration testi}
+\textbf{Niye:} CRUD + auth + OCPP zincirinin doğru aktığını otomatik kontrol.\\
+\textbf{Önce:} Adım 82, 83, 88.\\
+\textbf{Ne yapacaksın:}
+\begin{itemize}
+    \item \texttt{pytest-asyncio + httpx}.
+    \item Senaryo: tenant kayıt → site oluştur → charger ekle → sahte OCPP bağlanma → \texttt{run\_optimization} → \texttt{SetChargingProfile} push.
+\end{itemize}
+\textbf{Bittiği nasıl anlaşılır:} \texttt{pytest tests/integration/} → tüm yeşil.
+
+\adim{Tariff endpoint'leri}
+\textbf{Niye:} Faz 2'de yapılan modülü API'ye expose et.\\
+\textbf{Önce:} Adım 39.\\
+\textbf{Ne yapacaksın:}
+\begin{itemize}
+    \item \texttt{POST /sites/\{id\}/calculate-roi} → JSON ROI raporu.
+    \item \texttt{GET /tariffs} → kullanılabilir tarife listesi.
+\end{itemize}
+\textbf{Bittiği nasıl anlaşılır:} Swagger'dan ROI hesaplanıyor.
+
+\adim{Telemetry query endpoint'leri}
+\textbf{Niye:} Dashboard verisi buradan beslenecek.\\
+\textbf{Önce:} Adım 86.\\
+\textbf{Ne yapacaksın:}
+\begin{itemize}
+    \item \texttt{GET /sites/\{id\}/power?from=...\&to=...\&resolution=1m}.
+    \item Pagination + max time range guards.
+\end{itemize}
+\textbf{Bittiği nasıl anlaşılır:} 24 saatlik veri ve 1 dk grain ile JSON dönüyor.
+
+\adim{Alarm modeli (basit)}
+\textbf{Niye:} ``Trafo aşımı'', ``Charger 30 dk heartbeat yok'' gibi temel uyarılar.\\
+\textbf{Önce:} Adım 88.\\
+\textbf{Ne yapacaksın:}
+\begin{itemize}
+    \item \texttt{Alarm} tablosu: type, severity, site\_id, charger\_id, message, created\_at, resolved\_at.
+    \item Celery task: alarm condition kontrolü her 1 dk.
+\end{itemize}
+\textbf{Bittiği nasıl anlaşılır:} Sahte ``charger offline'' senaryosunda alarm DB'ye düşüyor.
+
+\adim{E-posta bildirimleri}
+\textbf{Niye:} Müşteri push notification yok; en azından e-posta.\\
+\textbf{Önce:} Adım 95.\\
+\textbf{Ne yapacaksın:}
+\begin{itemize}
+    \item SES (AWS) ya da SendGrid (free tier).
+    \item Critical alarm → operator e-postası.
+\end{itemize}
+\textbf{Bittiği nasıl anlaşılır:} Test alarmı gerçek e-posta tetikliyor.
+
+\adim{Webhook desteği}
+\textbf{Niye:} Müşterinin BMS / monitoring sistemine entegrasyon.\\
+\textbf{Önce:} Adım 96.\\
+\textbf{Ne yapacaksın:}
+\begin{itemize}
+    \item Tenant başına \texttt{Webhook} kaydı (URL + secret).
+    \item Alarm/transaction olaylarında HTTPS POST.
+    \item HMAC-SHA256 signature.
+\end{itemize}
+\textbf{Bittiği nasıl anlaşılır:} Webhook.site'a deneme alarmı geliyor.
+
+\adim{Audit log}
+\textbf{Niye:} ``Kim, ne zaman, hangi setting'i değiştirdi.''\\
+\textbf{Önce:} Adım 80.\\
+\textbf{Ne yapacaksın:}
+\begin{itemize}
+    \item \texttt{AuditLog} tablosu: user\_id, action, resource, old\_value, new\_value, ts.
+    \item Middleware: tüm yazma işlemlerini loglar.
+\end{itemize}
+\textbf{Bittiği nasıl anlaşılır:} 1 site update sonra audit log'da kaydı.
+
+\adim{API rate limiting}
+\textbf{Niye:} Kötü niyet ya da hatalı script DoS yapmasın.\\
+\textbf{Önce:} Adım 87.\\
+\textbf{Ne yapacaksın:}
+\begin{itemize}
+    \item \texttt{slowapi} (Redis backend).
+    \item Default: 60 req/min/user; M2M token için 600/min.
+\end{itemize}
+\textbf{Bittiği nasıl anlaşılır:} 70 hızlı request → 6 tanesi 429 dönüyor.
+
+\adim{OpenAPI spec dışa aktarımı}
+\textbf{Niye:} Sözleşmeli müşteri ``API dokümanı'' ister; yatırımcı pitch'inde de.\\
+\textbf{Önce:} Adım 81.\\
+\textbf{Ne yapacaksın:}
+\begin{itemize}
+    \item \texttt{python -c "from api.main import app; ..."} → \texttt{openapi.json}.
+    \item Versiyonla: \texttt{docs/api/v1/openapi.json}.
+\end{itemize}
+\textbf{Bittiği nasıl anlaşılır:} \texttt{docs/api/} klasörü repo'da.
+
+% ===================================================================
+\newpage
+\section{FAZ 6 --- Telemetri Pipeline (Adım 101--115)}
+
+\adim{IoT Gateway'de production-grade publisher}
+\textbf{Niye:} Lab kurulumunu bir kez prodüktiv hale getir.\\
+\textbf{Önce:} Adım 75.\\
+\textbf{Ne yapacaksın:}
+\begin{itemize}
+    \item Pi'da systemd service (\texttt{evlb-gateway.service}): boot'ta otomatik başla, crash'te restart.
+    \item Konfigürasyon: \texttt{/etc/evlb/gateway.toml} (Janitza IP, MQTT broker, sample interval).
+\end{itemize}
+\textbf{Bittiği nasıl anlaşılır:} Pi reboot sonrası otomatik veri akıyor.
+
+\adim{Bulut ingestion endpoint}
+\textbf{Niye:} Pi'dan gelen telemetriyi karşılayan API endpoint.\\
+\textbf{Önce:} Adım 86, 101.\\
+\textbf{Ne yapacaksın:}
+\begin{itemize}
+    \item \texttt{POST /ingest/meter} (mTLS veya HMAC).
+    \item Pi: 1 sn'lik buffer, batch insert.
+    \item DB'ye TimescaleDB üzerinden \texttt{INSERT}.
+\end{itemize}
+\textbf{Bittiği nasıl anlaşılır:} \texttt{evlb-api}'de meter\_readings tablosu büyüyor.
+
+\adim{MQTT vs HTTP karar}
+\textbf{Niye:} Saha sayısı arttıkça HTTP ineye yorabilir.\\
+\textbf{Önce:} Adım 102.\\
+\textbf{Ne yapacaksın:}
+\begin{itemize}
+    \item Karar: ilk 10 saha HTTP; sonra MQTT (HiveMQ Cloud, \$50/ay).
+    \item ADR yaz.
+\end{itemize}
+\textbf{Bittiği nasıl anlaşılır:} ADR repo'da.
+
+\adim{Charger telemetry'sini birleşik pipeline'a al}
+\textbf{Niye:} OCPP MeterValues + Janitza farklı kaynaklar; tek tabloda birleşmeli.\\
+\textbf{Önce:} Adım 90, 102.\\
+\textbf{Ne yapacaksın:}
+\begin{itemize}
+    \item \texttt{MeterReading.source} enum: \texttt{ocpp\_charger, site\_meter}.
+    \item Aynı tablo, ayrı satırlar.
+\end{itemize}
+\textbf{Bittiği nasıl anlaşılır:} Query: \texttt{SELECT source, COUNT(*) FROM meter\_readings GROUP BY source;}
+
+\adim{Time-sync (NTP) doğru}
+\textbf{Niye:} Pi/charger/server saat farklı olunca telemetri patlar.\\
+\textbf{Önce:} Adım 73.\\
+\textbf{Ne yapacaksın:}
+\begin{itemize}
+    \item Pi: \texttt{timedatectl set-ntp true}, NTP server: \texttt{tr.pool.ntp.org}.
+    \item Charger: OCPP \texttt{Heartbeat} response'da \texttt{currentTime} field; charger saatini set eder.
+\end{itemize}
+\textbf{Bittiği nasıl anlaşılır:} Pi/charger/server arasında $<1$ sn fark.
+
+\adim{Veri kalite kontrol}
+\textbf{Niye:} Bozuk veri = bozuk model + bozuk ROI raporu.\\
+\textbf{Önce:} Adım 102.\\
+\textbf{Ne yapacaksın:}
+\begin{itemize}
+    \item Ingestion sırasında kontrol: negatif güç, $>$1.5x trafo limiti, NaN, gelecek timestamp.
+    \item Bozuk satır → \texttt{quarantine} tablosu, alarm.
+\end{itemize}
+\textbf{Bittiği nasıl anlaşılır:} Sahte bozuk veri ingestion → quarantine'e düşüyor.
+
+\adim{Veri eksikliği detection}
+\textbf{Niye:} 5 dk telemetri yoksa charger offline sayılır.\\
+\textbf{Önce:} Adım 95.\\
+\textbf{Ne yapacaksın:}
+\begin{itemize}
+    \item Celery task: her 1 dk her charger için son MeterValues kontrol.
+    \item Eşik aşıldı → ``offline'' alarmı.
+\end{itemize}
+\textbf{Bittiği nasıl anlaşılır:} Sahte charger'ı kapat → 5 dk sonra alarm.
+
+\adim{Background load = site\_meter $-$ charger\_meter}
+\textbf{Niye:} Algoritma ``baz yük'' bilmek zorunda; tahmin modülü için input.\\
+\textbf{Önce:} Adım 104.\\
+\textbf{Ne yapacaksın:}
+\begin{itemize}
+    \item \texttt{compute\_background\_load(site\_id, ts)} = total\_site\_power $-$ \texttt{SUM(charger\_power)}.
+    \item Aggregation per minute.
+\end{itemize}
+\textbf{Bittiği nasıl anlaşılır:} Time series view: site, charger toplam, baz yük.
+
+\adim{Hava verisi entegrasyonu}
+\textbf{Niye:} Yük tahmininin önemli özniteliği.\\
+\textbf{Önce:} ---\\
+\textbf{Ne yapacaksın:}
+\begin{itemize}
+    \item OpenWeather (free 1K req/gün) veya MGM (resmi, free).
+    \item Celery task: her 1 saat her saha için sıcaklık, ışık, nem topla.
+    \item \texttt{WeatherReading} tablosu.
+\end{itemize}
+\textbf{Bittiği nasıl anlaşılır:} 24 saat verisi DB'de.
+
+\adim{TR resmi tatil takvimi}
+\textbf{Niye:} Yük tahmini özniteliği; AVM/lojistik tatilde sıfıra yakın yükler.\\
+\textbf{Önce:} ---\\
+\textbf{Ne yapacaksın:}
+\begin{itemize}
+    \item Python: \texttt{holidays} kütüphanesi (TR destek var).
+    \item \texttt{is\_holiday(date)} helper.
+    \item Ramazan/bayram için ek manuel girdi (öğle saati AVM hareketli).
+\end{itemize}
+\textbf{Bittiği nasıl anlaşılır:} 2026 TR tatil tablosunu oluşturuyorsun.
+
+\adim{EPİAŞ Şeffaflık API entegrasyonu}
+\textbf{Niye:} Saatlik TR ulusal tüketim --- pre-training prior.\\
+\textbf{Önce:} ---\\
+\textbf{Ne yapacaksın:}
+\begin{itemize}
+    \item EPİAŞ Şeffaflık Platformu hesap aç (free).
+    \item OAuth2 token al.
+    \item \texttt{GET /electricity-service/v1/consumption/data/realtime-consumption}.
+    \item Tarihi veri (1 yıllık) çek; \texttt{epias\_hourly} tablosuna kaydet.
+\end{itemize}
+\textbf{Bittiği nasıl anlaşılır:} Pandas DataFrame içinde 8760 satır (1 yıl saatlik).
+
+\adim{Veri ambarı katmanı (analitik)}
+\textbf{Niye:} OLTP ile analitik aynı DB'de olmaz; sorgu darbeleri yer.\\
+\textbf{Önce:} Adım 102.\\
+\textbf{Ne yapacaksın:}
+\begin{itemize}
+    \item Hetzner / küçük ölçekte: aynı Postgres'te ayrı schema (\texttt{analytics}) + materialized views.
+    \item Faz 3'te ClickHouse veya Snowflake'e geçiş kararı.
+\end{itemize}
+\textbf{Bittiği nasıl anlaşılır:} \texttt{analytics.daily\_site\_power} view sorgulanıyor.
+
+\adim{Veri export (CSV / Parquet)}
+\textbf{Niye:} Akademik partner ya da müşteri ``ham veri'' ister.\\
+\textbf{Önce:} Adım 102.\\
+\textbf{Ne yapacaksın:}
+\begin{itemize}
+    \item \texttt{POST /sites/\{id\}/export?format=parquet\&from=\&to=}.
+    \item Async job: S3-uyumlu (MinIO) bucket'a yaz, signed URL döndür.
+\end{itemize}
+\textbf{Bittiği nasıl anlaşılır:} 1 günlük export $<1$ dk.
+
+\adim{Veri sahipliği + KVKK uyum sözleşmesi}
+\textbf{Niye:} Pilot sözleşmesinde net olmalı.\\
+\textbf{Önce:} ---\\
+\textbf{Ne yapacaksın:}
+\begin{itemize}
+    \item Avukatla sözleşme şablonu: ``müşteri = veri sorumlusu, biz = veri işleyen, anonim aggregat verisi araştırma için kullanılabilir.''
+\end{itemize}
+\textbf{Bittiği nasıl anlaşılır:} Şablon repo \texttt{docs/legal/}'a (gizli kısım).
+
+\adim{Backup \& restore prosedürü}
+\textbf{Niye:} Veri kaybı = pilot'un bitmesi + güven kaybı.\\
+\textbf{Önce:} Adım 102.\\
+\textbf{Ne yapacaksın:}
+\begin{itemize}
+    \item Cron: gece 03:00 \texttt{pg\_dump} → S3-uyumlu bucket.
+    \item Retention: 30 günlük günlük + 12 aylık aylık snapshot.
+    \item Restore tatbikatı: 1 ay sonra başka bir DB'ye \texttt{pg\_restore}.
+\end{itemize}
+\textbf{Bittiği nasıl anlaşılır:} Restore tatbikatı başarılı.
+
+% ===================================================================
+\newpage
+\section{FAZ 7 --- Yük Tahmini (Adım 116--140)}
+
+\textit{Bu fazda gerçek ML iş başlıyor. Sıfırdan başlıyorsan: önce baseline, sonra XGBoost, sonra LSTM.}
+
+\adim{ML kütüphaneleri kurulumu}
+\textbf{Niye:} Stack'i bir kez kur, sonra üretkene geç.\\
+\textbf{Önce:} Adım 7.\\
+\textbf{Ne yapacaksın:}
+\begin{itemize}
+    \item \texttt{pip install scikit-learn xgboost lightgbm prophet pandas matplotlib jupyter}
+    \item Faz 7 sonu için: \texttt{pip install pytorch transformers neuralprophet}
+\end{itemize}
+\textbf{Bittiği nasıl anlaşılır:} \texttt{import xgboost; xgboost.\_\_version\_\_} hatasız.
+
+\adim{Jupyter notebook environment}
+\textbf{Niye:} Veri keşfi için interaktif ortam şart.\\
+\textbf{Önce:} Adım 116.\\
+\textbf{Ne yapacaksın:}
+\begin{itemize}
+    \item \texttt{notebooks/} klasörü.
+    \item \texttt{nbstripout} (commit'e çıktı dahil etme).
+\end{itemize}
+\textbf{Bittiği nasıl anlaşılır:} İlk \texttt{notebooks/00\_setup.ipynb} açılıyor.
+
+\adim{Public dataset --- ENTSO-E TR indirme}
+\textbf{Niye:} Pre-training için 5+ yıllık saatlik TR tüketim.\\
+\textbf{Önce:} ---\\
+\textbf{Ne yapacaksın:}
+\begin{itemize}
+    \item \texttt{entsoe-py} kütüphanesi.
+    \item API key al (transparency.entsoe.eu).
+    \item TR yük: 2019-01-01 → bugün, saatlik.
+    \item Parquet olarak kaydet.
+\end{itemize}
+\textbf{Bittiği nasıl anlaşılır:} 50K+ satır parquet.
+
+\adim{ACN-Data (Caltech) indirme}
+\textbf{Niye:} EV şarj davranışı için public proxy.\\
+\textbf{Önce:} ---\\
+\textbf{Ne yapacaksın:}
+\begin{itemize}
+    \item \href{https://ev.caltech.edu/dataset}{ev.caltech.edu/dataset} kayıt + indirme.
+    \item Sessions CSV: arrival, departure, energy, max\_power.
+    \item Notebook: keşif analizi (saatlik geliş yoğunluğu, SoC dağılımı).
+\end{itemize}
+\textbf{Bittiği nasıl anlaşılır:} Notebook'ta histogram + heatmap.
+
+\adim{Pilot saha veri toplamayı başlat}
+\textbf{Niye:} Public veri TR ve site-specific için yetersiz.\\
+\textbf{Önce:} Adım 65--75.\\
+\textbf{Ne yapacaksın:}
+\begin{itemize}
+    \item Pilot saha gateway'i kur (Faz 4 prosedür).
+    \item En az 30 gün ``shadow mode'' (kontrol etme, sadece veri biriktir).
+\end{itemize}
+\textbf{Bittiği nasıl anlaşılır:} 30 gün × 1440 dk = 43.2K satır pilot veri.
+
+\adim{Baseline tahmin: ``geçen haftanın aynı saati''}
+\textbf{Niye:} Akıl baseline; bunu yenmek bile birinci adım.\\
+\textbf{Önce:} Adım 120.\\
+\textbf{Ne yapacaksın:}
+\begin{itemize}
+    \item \texttt{evlb/forecast/baseline.py}: \texttt{predict(history, horizon)} → 7 gün önceki aynı slot.
+    \item Walk-forward CV: son 7 gün test, öncesi train, kayan pencere.
+    \item MAPE 24h hesapla.
+\end{itemize}
+\textbf{Bittiği nasıl anlaşılır:} Notebook'ta MAPE rakamı (örn \%18--25).
+
+\adim{Feature engineering --- temel öznitelikler}
+\textbf{Niye:} Doğru özellikler = düşük MAPE; yanlış model = boşa eğitim.\\
+\textbf{Önce:} Adım 121.\\
+\textbf{Ne yapacaksın:}
+\begin{itemize}
+    \item \texttt{features.py}:
+\begin{lstlisting}
+def make_features(df):
+    df['hour'] = df.ts.dt.hour
+    df['dow'] = df.ts.dt.dayofweek
+    df['month'] = df.ts.dt.month
+    df['is_weekend'] = df.dow >= 5
+    df['is_holiday'] = df.ts.dt.date.map(holiday_map)
+    df['lag_1h'] = df.power.shift(60)
+    df['lag_24h'] = df.power.shift(60*24)
+    df['lag_168h'] = df.power.shift(60*24*7)
+    df['rolling_24h_mean'] = df.power.rolling(60*24).mean()
+    return df
+\end{lstlisting}
+\end{itemize}
+\textbf{Bittiği nasıl anlaşılır:} 12+ feature kolonu var.
+
+\adim{Hava + takvim feature'larını join}
+\textbf{Niye:} Sıcaklık AVM klima yükünü etkiler; tatil yükünü düşürür.\\
+\textbf{Önce:} Adım 122.\\
+\textbf{Ne yapacaksın:}
+\begin{itemize}
+    \item Hava DataFrame ile saatlik join.
+    \item TR holidays ile join.
+    \item Eksik veri (interpolation).
+\end{itemize}
+\textbf{Bittiği nasıl anlaşılır:} Final DataFrame: power + 18 feature.
+
+\adim{XGBoost model V1}
+\textbf{Niye:} Tabular zaman serisinde XGBoost şampiyon.\\
+\textbf{Önce:} Adım 123.\\
+\textbf{Ne yapacaksın:}
+\begin{itemize}
+    \item \texttt{xgboost.XGBRegressor(n\_estimators=500, max\_depth=6, ...)}
+    \item Train/val split: TimeSeriesSplit (sklearn).
+    \item Metrik: MAE, MAPE, RMSE.
+\end{itemize}
+\textbf{Bittiği nasıl anlaşılır:} MAPE 24h, baseline'dan en az \%30 iyi.
+
+\adim{Hyperparameter tuning --- Optuna}
+\textbf{Niye:} Default'lar nadiren optimal.\\
+\textbf{Önce:} Adım 124.\\
+\textbf{Ne yapacaksın:}
+\begin{itemize}
+    \item \texttt{pip install optuna}
+    \item 50 trial Bayesian search.
+    \item Best params kaydet.
+\end{itemize}
+\textbf{Bittiği nasıl anlaşılır:} MAPE \%5+ iyileşme.
+
+\adim{Quantile forecast (P10/P50/P90)}
+\textbf{Niye:} Deterministic tahmin yerine belirsizlik bandı --- karar daha iyi.\\
+\textbf{Önce:} Adım 124.\\
+\textbf{Ne yapacaksın:}
+\begin{itemize}
+    \item LightGBM \texttt{objective="quantile", alpha=0.1, 0.5, 0.9}.
+    \item 3 ayrı model.
+\end{itemize}
+\textbf{Bittiği nasıl anlaşılır:} Görselleştirme: P10/P50/P90 bantları.
+
+\adim{Walk-forward CV otomatik}
+\textbf{Niye:} Modeller karşılaştırması bilimsel olmalı.\\
+\textbf{Önce:} Adım 125.\\
+\textbf{Ne yapacaksın:}
+\begin{itemize}
+    \item \texttt{src/evlb/forecast/cv.py}: TimeSeriesSplit kullanarak \texttt{evaluate(model, df, n\_splits=10)}.
+    \item Çıktı: ortalama MAE, std, kötü-fold listesi.
+\end{itemize}
+\textbf{Bittiği nasıl anlaşılır:} Tablo: 3 model × MAE, MAPE.
+
+\adim{MLflow tracking}
+\textbf{Niye:} Hangi model hangi datasetle eğitildi, takip et.\\
+\textbf{Önce:} Adım 124.\\
+\textbf{Ne yapacaksın:}
+\begin{itemize}
+    \item \texttt{mlflow ui}, server kur.
+    \item Her eğitimde: params, metrics, artifacts log.
+\end{itemize}
+\textbf{Bittiği nasıl anlaşılır:} MLflow UI'da deneme listesi.
+
+\adim{Model registry + versiyonlama}
+\textbf{Niye:} Production'da hangi modelin canlı olduğunu bil.\\
+\textbf{Önce:} Adım 128.\\
+\textbf{Ne yapacaksın:}
+\begin{itemize}
+    \item MLflow Model Registry: \texttt{Staging, Production} stage.
+    \item Yeni model promote akışı.
+\end{itemize}
+\textbf{Bittiği nasıl anlaşılır:} Production'da v0.3 etiketli model.
+
+\adim{Inference servisi (FastAPI içinde)}
+\textbf{Niye:} Algoritma her 1 dk tahmin isteyecek.\\
+\textbf{Önce:} Adım 129.\\
+\textbf{Ne yapacaksın:}
+\begin{itemize}
+    \item \texttt{src/api/forecast/service.py}: \texttt{predict(site\_id, horizon\_min)} fonksiyonu.
+    \item Model warm-up (boot'ta yükle).
+    \item P99 latency $<$ 100 ms hedef.
+\end{itemize}
+\textbf{Bittiği nasıl anlaşılır:} Load test 100 req/s, p99 $<$ 100 ms.
+
+\adim{LSTM prototip (V3 araştırma)}
+\textbf{Niye:} Yatırımcı pitch'inde ``Transformer kullanıyoruz''.\\
+\textbf{Önce:} Adım 124.\\
+\textbf{Ne yapacaksın:}
+\begin{itemize}
+    \item PyTorch Lightning.
+    \item Tek katman LSTM, hidden=64, 7 günlük input.
+    \item GPU eğitim (Lambda Labs / Colab Pro).
+\end{itemize}
+\textbf{Bittiği nasıl anlaşılır:} XGBoost'tan biraz iyi MAPE; akademik makaleye temel.
+
+\adim{Temporal Fusion Transformer (TFT)}
+\textbf{Niye:} State-of-the-art; yatırımcı sevimli.\\
+\textbf{Önce:} Adım 132.\\
+\textbf{Ne yapacaksın:}
+\begin{itemize}
+    \item \texttt{pip install pytorch-forecasting}.
+    \item TFT model + DataLoader.
+    \item Eğitim: 10+ saat GPU.
+\end{itemize}
+\textbf{Bittiği nasıl anlaşılır:} TFT MAPE rakamı, attention plot.
+
+\adim{Online learning (rolling retrain)}
+\textbf{Niye:} Saha sezon değişiklikleri model drift; haftalık retrain gerek.\\
+\textbf{Önce:} Adım 130.\\
+\textbf{Ne yapacaksın:}
+\begin{itemize}
+    \item Celery beat schedule: her Pazar 03:00 retrain.
+    \item Yeni model staging $\to$ A/B test (1 hafta) $\to$ production.
+\end{itemize}
+\textbf{Bittiği nasıl anlaşılır:} Otomatik retrain çalışıyor; MLflow'da yeni run.
+
+\adim{Drift detection}
+\textbf{Niye:} Sahada ani değişim olursa model bozulur; alarm gerek.\\
+\textbf{Önce:} Adım 134.\\
+\textbf{Ne yapacaksın:}
+\begin{itemize}
+    \item \texttt{evidently} kütüphanesi.
+    \item Günlük distribution drift testi (KS-test).
+    \item Eşik üstü → alarm.
+\end{itemize}
+\textbf{Bittiği nasıl anlaşılır:} Yapay drift senaryosu alarm tetikliyor.
+
+\adim{EV gelişi tahmini ayrı modeli}
+\textbf{Niye:} Saha baz yükünden bağımsız; farklı pattern.\\
+\textbf{Önce:} Adım 130.\\
+\textbf{Ne yapacaksın:}
+\begin{itemize}
+    \item Hedef: sonraki 1 sa içinde gelecek araç sayısı (Poisson).
+    \item Feature: hour, dow, recent arrival counts, weather.
+    \item Model: XGBoost classifier (0/1/2/3+).
+\end{itemize}
+\textbf{Bittiği nasıl anlaşılır:} 1-saat ileri MAE arrival\_count $<$ 1.
+
+\adim{SoC dağılım modeli}
+\textbf{Niye:} Algoritma için gelecek araç ``başlangıç SoC''i bilinmeli.\\
+\textbf{Önce:} Adım 137.\\
+\textbf{Ne yapacaksın:}
+\begin{itemize}
+    \item ACN-Data + pilot veri ile gelen SoC histogramı.
+    \item Saatlik Beta distribution fit.
+\end{itemize}
+\textbf{Bittiği nasıl anlaşılır:} Saatlik beta parametreleri kaydedildi.
+
+\adim{Tahmin → karar entegrasyonu}
+\textbf{Niye:} Tahmin tek başına işe yaramaz; algoritmanın input'u olacak.\\
+\textbf{Önce:} Adım 130, 137.\\
+\textbf{Ne yapacaksın:}
+\begin{itemize}
+    \item \texttt{run\_optimization(site\_id)} task içinde:
+        \begin{itemize}
+            \item Önce: \texttt{forecast.predict(site\_id, 60)} → 1 saatlik baz yük tahmini.
+            \item Sonra: \texttt{controller.allocate\_power(...)} bu tahmini kullanarak.
+        \end{itemize}
+\end{itemize}
+\textbf{Bittiği nasıl anlaşılır:} Algoritma kararları tahmin-bilgili.
+
+\adim{Tahmin doğruluğu reporting}
+\textbf{Niye:} Müşteri ``model tutuyor mu?'' diye sorar.\\
+\textbf{Önce:} Adım 130.\\
+\textbf{Ne yapacaksın:}
+\begin{itemize}
+    \item Günlük: tahmin vs gerçek karşılaştırma → MAPE 1h, 6h, 24h.
+    \item Aylık rapor PDF'ine ekle.
+\end{itemize}
+\textbf{Bittiği nasıl anlaşılır:} Aylık rapor sayfasında ``forecast accuracy'' grafiği.
+
+% ===================================================================
+\newpage
+\section{FAZ 8 --- Algoritmayı Production'a Port (Adım 141--150)}
+
+\adim{Algoritma servisi izole tut}
+\textbf{Niye:} ``Optimization core'' bir microservice; testi kolay, deploy ayrı.\\
+\textbf{Önce:} Adım 88.\\
+\textbf{Ne yapacaksın:}
+\begin{itemize}
+    \item \texttt{src/optimizer/service.py}: \texttt{optimize(site\_state, forecast, tariff)} → \texttt{ChargingPlan}.
+    \item Pure function: state-in, plan-out.
+\end{itemize}
+\textbf{Bittiği nasıl anlaşılır:} Birim test edilebiliyor; backend bağımlılığı yok.
+
+\adim{Rolling horizon framework}
+\textbf{Niye:} Şu anlık karar yerine 1-2 saatlik plan optimal.\\
+\textbf{Önce:} Adım 141.\\
+\textbf{Ne yapacaksın:}
+\begin{itemize}
+    \item Her 1 dk: 60 dk ileriye optimize et, ilk dakikayı uygula, gerisini at.
+    \item Test senaryosu: tahmin değişince plan güncelleniyor mu.
+\end{itemize}
+\textbf{Bittiği nasıl anlaşılır:} 1 saatlik simülasyonda planın 60 kez yenilendiği log.
+
+\adim{CVXPY ile MILP/QP formülasyonu}
+\textbf{Niye:} Greedy yerine optimum karar.\\
+\textbf{Önce:} Adım 142.\\
+\textbf{Ne yapacaksın:}
+\begin{itemize}
+    \item \texttt{pip install cvxpy}
+    \item Decision: $P_{i,t}$ matris (araç × dakika).
+    \item Constraint: charger limit, trafo limit, energy hedef.
+    \item Objective: maliyet + bekleme cezası.
+\end{itemize}
+\textbf{Bittiği nasıl anlaşılır:} Küçük örnek (3 araç, 30 dk) CVXPY çözüyor.
+
+\adim{Solver performansı}
+\textbf{Niye:} 1 dk içinde çözüm vermeli; yoksa real-time olmaz.\\
+\textbf{Önce:} Adım 143.\\
+\textbf{Ne yapacaksın:}
+\begin{itemize}
+    \item Profiling: 10 araç, 60 dk.
+    \item GLPK (free) vs Gurobi (lisans, 100x hızlı).
+    \item Gerekirse heuristik fallback.
+\end{itemize}
+\textbf{Bittiği nasıl anlaşılır:} 10 araç problemi $<$ 5 sn çözüyor.
+
+\adim{Heuristik fallback}
+\textbf{Niye:} Solver patlarsa karar boşa düşmesin.\\
+\textbf{Önce:} Adım 143.\\
+\textbf{Ne yapacaksın:}
+\begin{itemize}
+    \item DynamicFairController'ı fallback olarak kullan.
+    \item Try MILP → 10 sn timeout → fallback.
+\end{itemize}
+\textbf{Bittiği nasıl anlaşılır:} Yapay timeout testi → fallback aktif.
+
+\adim{A/B test framework}
+\textbf{Niye:} Yeni algoritma vs eski karşılaştırma için.\\
+\textbf{Önce:} Adım 141.\\
+\textbf{Ne yapacaksın:}
+\begin{itemize}
+    \item Site config'inde \texttt{algorithm\_variant: A | B}.
+    \item Aynı saha günleri rastgele A/B'ye atanabilir.
+    \item Sonuç: ortalama bekleme, aşım dakikası, fatura tasarrufu.
+\end{itemize}
+\textbf{Bittiği nasıl anlaşılır:} Test çıktı tablosu.
+
+\adim{Dry-run mode}
+\textbf{Niye:} Pilotta önce ``öneri yapıyor ama uygulamıyor''.\\
+\textbf{Önce:} Adım 141.\\
+\textbf{Ne yapacaksın:}
+\begin{itemize}
+    \item Site config: \texttt{control\_mode: shadow | active}.
+    \item Shadow modda \texttt{SetChargingProfile} gönderilmez, sadece log.
+\end{itemize}
+\textbf{Bittiği nasıl anlaşılır:} Pilot ilk 4 hafta shadow.
+
+\adim{Algoritma KPI dashboard}
+\textbf{Niye:} İçerideki ekip için ``algoritma sağlığı''.\\
+\textbf{Önce:} Adım 141.\\
+\textbf{Ne yapacaksın:}
+\begin{itemize}
+    \item Grafana panel: solver runtime, fallback rate, problem size.
+\end{itemize}
+\textbf{Bittiği nasıl anlaşılır:} Panel canlı veri gösteriyor.
+
+\adim{Algoritmanın yan etkileri ölçümü}
+\textbf{Niye:} Yavaş şarj $\to$ batarya iyi, müşteri yavaşlık şikayeti edebilir.\\
+\textbf{Önce:} Adım 146.\\
+\textbf{Ne yapacaksın:}
+\begin{itemize}
+    \item KPI: ortalama şarj süresi, tamamlanma oranı, hedef SoC altında bırakma yüzdesi.
+\end{itemize}
+\textbf{Bittiği nasıl anlaşılır:} Aylık raporda KPI'lar.
+
+\adim{Algoritma decision log}
+\textbf{Niye:} Müşteri ``bu araç niye yavaş şarjlanıyor?'' diye sorduğunda cevap.\\
+\textbf{Önce:} Adım 141.\\
+\textbf{Ne yapacaksın:}
+\begin{itemize}
+    \item Her decision'da: \texttt{decision\_id, ts, inputs (state, forecast, tariff), output (plan), rationale}.
+    \item DB'ye kayıt; 90 gün retention.
+\end{itemize}
+\textbf{Bittiği nasıl anlaşılır:} Bir transaction ID için decision history sorgulanabiliyor.
+
+% ===================================================================
+\newpage
+\section{FAZ 9 --- Operatör Dashboard (Adım 151--165)}
+
+\adim{Next.js proje skeleton}
+\textbf{Niye:} Frontend stack'i.\\
+\textbf{Önce:} ---\\
+\textbf{Ne yapacaksın:}
+\begin{itemize}
+    \item \texttt{npx create-next-app@latest evlb-dashboard --typescript --tailwind --app}
+    \item shadcn/ui kurulumu.
+    \item TanStack Query + Zustand (state).
+\end{itemize}
+\textbf{Bittiği nasıl anlaşılır:} \texttt{npm run dev} → \texttt{localhost:3000}.
+
+\adim{Auth flow (Keycloak/Auth0 ile entegrasyon)}
+\textbf{Niye:} Login olmadan dashboard yok.\\
+\textbf{Önce:} Adım 83.\\
+\textbf{Ne yapacaksın:}
+\begin{itemize}
+    \item NextAuth.js veya Auth0 SDK.
+    \item Login sayfası → callback → token cookie.
+\end{itemize}
+\textbf{Bittiği nasıl anlaşılır:} Login flow uçtan uca çalışıyor.
+
+\adim{API client}
+\textbf{Niye:} Backend ile konuşmak için tek noktadan.\\
+\textbf{Önce:} Adım 100.\\
+\textbf{Ne yapacaksın:}
+\begin{itemize}
+    \item OpenAPI'den TypeScript client generate (\texttt{openapi-typescript}).
+    \item React hook'lar: \texttt{useSites(), useChargers()}.
+\end{itemize}
+\textbf{Bittiği nasıl anlaşılır:} \texttt{useSites()} hook'u sites listesi dönüyor.
+
+\adim{Sites listesi sayfası}
+\textbf{Niye:} İlk müşteri yüzü.\\
+\textbf{Önce:} Adım 153.\\
+\textbf{Ne yapacaksın:}
+\begin{itemize}
+    \item Tablo: site adı, charger sayısı, son aktivite, alarm sayısı.
+    \item Search + sort.
+\end{itemize}
+\textbf{Bittiği nasıl anlaşılır:} 5 site listede.
+
+\adim{Site detay sayfası}
+\textbf{Niye:} Saha yöneticisinin ana ekranı.\\
+\textbf{Önce:} Adım 154.\\
+\textbf{Ne yapacaksın:}
+\begin{itemize}
+    \item Tab'lar: Genel Bakış, Charger'lar, Tahmin, Raporlar, Ayarlar.
+\end{itemize}
+\textbf{Bittiği nasıl anlaşılır:} Tab navigasyonu çalışıyor.
+
+\adim{Genel Bakış paneli}
+\textbf{Niye:} Anlık durum tek bakışta.\\
+\textbf{Önce:} Adım 92, 155.\\
+\textbf{Ne yapacaksın:}
+\begin{itemize}
+    \item Üst: anlık güç (kW), trafo limit, kapasite kullanım yüzdesi.
+    \item Orta: 24 saat power timeseries chart (Recharts).
+    \item Sağ: aktif şarj sessions tablosu.
+\end{itemize}
+\textbf{Bittiği nasıl anlaşılır:} Sayfa yenilenmeden veriler güncelleniyor (1-dk WebSocket veya polling).
+
+\adim{Real-time updates --- Server-Sent Events (SSE)}
+\textbf{Niye:} Dashboard 1 dk ``hard reload'' kötü UX.\\
+\textbf{Önce:} Adım 156.\\
+\textbf{Ne yapacaksın:}
+\begin{itemize}
+    \item Backend: \texttt{GET /sites/\{id\}/stream} (SSE endpoint).
+    \item Frontend: \texttt{EventSource} hook.
+\end{itemize}
+\textbf{Bittiği nasıl anlaşılır:} Telemetri 1 sn'lik gecikmeyle güncelleniyor.
+
+\adim{Charger'lar tab'ı}
+\textbf{Niye:} Cihaz bazlı durum ve kontrol.\\
+\textbf{Önce:} Adım 155.\\
+\textbf{Ne yapacaksın:}
+\begin{itemize}
+    \item Grid view: her charger için card (durum, anlık güç, transaction).
+    \item Detay modal: meter values geçmişi, son 24 saat session'lar.
+    \item Buton: ``Reset charger'' (RemoteStop).
+\end{itemize}
+\textbf{Bittiği nasıl anlaşılır:} Charger card UI'ı dinamik.
+
+\adim{Tahmin tab'ı}
+\textbf{Niye:} ``Önümüzdeki 24 saat ne olacak?'' --- planlama için.\\
+\textbf{Önce:} Adım 130, 155.\\
+\textbf{Ne yapacaksın:}
+\begin{itemize}
+    \item Chart: P10/P50/P90 bandı + tahmini araç gelişi.
+\end{itemize}
+\textbf{Bittiği nasıl anlaşılır:} Belirsizlik bandı görselleşmiş.
+
+\adim{Raporlar tab'ı}
+\textbf{Niye:} Aylık ROI raporu burada indirilir.\\
+\textbf{Önce:} Adım 40, 155.\\
+\textbf{Ne yapacaksın:}
+\begin{itemize}
+    \item Tarih aralığı seçici.
+    \item ``PDF rapor üret'' butonu (ROI özet, tasarruf grafiği).
+\end{itemize}
+\textbf{Bittiği nasıl anlaşılır:} Test PDF download oluyor.
+
+\adim{Alarm/Olay merkezi}
+\textbf{Niye:} Operatör ``ne oldu?'' diye hızlı görmeli.\\
+\textbf{Önce:} Adım 95.\\
+\textbf{Ne yapacaksın:}
+\begin{itemize}
+    \item Sayfa: tüm alarm listesi (severity filtreli).
+    \item Detay: timeline, ilgili charger, çözümleme.
+\end{itemize}
+\textbf{Bittiği nasıl anlaşılır:} Alarm listesi + filtre çalışıyor.
+
+\adim{Ayarlar sayfası}
+\textbf{Niye:} Operatör algoritma davranışını ayarlamak ister (örn priorite kuralları).\\
+\textbf{Önce:} Adım 88.\\
+\textbf{Ne yapacaksın:}
+\begin{itemize}
+    \item Algoritma seçici (Yönetimli / SRPT / Su Doldurma / Dinamik Adil).
+    \item Eşik ayarlar (trafo emniyet payı, minimum keep-alive kW).
+\end{itemize}
+\textbf{Bittiği nasıl anlaşılır:} Setting save sonra optimizer yeni değerle çalışıyor.
+
+\adim{Multi-tenant theming}
+\textbf{Niye:} Beyaz etiket potansiyeli; her CPO/EnerjiSA kendi logosuyla görmek ister.\\
+\textbf{Önce:} Adım 80.\\
+\textbf{Ne yapacaksın:}
+\begin{itemize}
+    \item Tenant config: logo URL, primary color, name.
+    \item Subdomain routing: \texttt{cpox.evlb.app}.
+\end{itemize}
+\textbf{Bittiği nasıl anlaşılır:} Test subdomain farklı tema yüklüyor.
+
+\adim{Mobile responsive}
+\textbf{Niye:} Saha yöneticisi sahada telefonla bakar.\\
+\textbf{Önce:} Adım 156.\\
+\textbf{Ne yapacaksın:}
+\begin{itemize}
+    \item Tailwind responsive classes ile ana sayfaları düzenle.
+    \item Touch-friendly butonlar.
+\end{itemize}
+\textbf{Bittiği nasıl anlaşılır:} 360px viewport'ta okunabilir.
+
+\adim{i18n (TR/EN)}
+\textbf{Niye:} TR ana, EN MENA / yatırımcı için.\\
+\textbf{Önce:} Adım 154.\\
+\textbf{Ne yapacaksın:}
+\begin{itemize}
+    \item \texttt{next-intl}.
+    \item Tüm string'leri \texttt{translations/tr.json, en.json}.
+\end{itemize}
+\textbf{Bittiği nasıl anlaşılır:} Dil değiştirici çalışıyor.
+
+% ===================================================================
+\newpage
+\section{FAZ 10 --- Bulut Deploy + CI/CD (Adım 166--175)}
+
+\adim{Hetzner Cloud hesabı + Terraform}
+\textbf{Niye:} Manuel server kurmak hata yapar.\\
+\textbf{Önce:} Adım 76.\\
+\textbf{Ne yapacaksın:}
+\begin{itemize}
+    \item \texttt{hetzner-cloud-tr-resmi-iletim} hesap aç.
+    \item \texttt{infra/terraform/} dizini.
+    \item Resources: 1 server (CX22, 4GB RAM), 1 volume (40GB).
+\end{itemize}
+\textbf{Bittiği nasıl anlaşılır:} \texttt{terraform apply} → server canlı.
+
+\adim{Docker image build}
+\textbf{Niye:} Reproducible deploy.\\
+\textbf{Önce:} Adım 77.\\
+\textbf{Ne yapacaksın:}
+\begin{itemize}
+    \item \texttt{Dockerfile} (multi-stage: builder + runner).
+    \item \texttt{.dockerignore}.
+    \item GitHub Actions: build + push to ghcr.io.
+\end{itemize}
+\textbf{Bittiği nasıl anlaşılır:} Image registry'de.
+
+\adim{Docker Compose production}
+\textbf{Niye:} Tek server'da hızlı başlangıç.\\
+\textbf{Önce:} Adım 167.\\
+\textbf{Ne yapacaksın:}
+\begin{itemize}
+    \item \texttt{infra/docker-compose.prod.yml}: api + worker + postgres + redis + nginx (reverse proxy + Let's Encrypt).
+\end{itemize}
+\textbf{Bittiği nasıl anlaşılır:} \texttt{https://api.evlb.app} canlı.
+
+\adim{CI/CD --- GitHub Actions deploy}
+\textbf{Niye:} Manual deploy hata yapar.\\
+\textbf{Önce:} Adım 167, 168.\\
+\textbf{Ne yapacaksın:}
+\begin{itemize}
+    \item \texttt{.github/workflows/deploy.yml}: \texttt{main} push → SSH server → \texttt{docker compose pull \&\& up -d}.
+    \item Slack/Discord notify.
+\end{itemize}
+\textbf{Bittiği nasıl anlaşılır:} Push → 5 dk içinde production yenileniyor.
+
+\adim{Cloudflare DNS + SSL + WAF}
+\textbf{Niye:} DDoS koruması, ücretsiz SSL.\\
+\textbf{Önce:} Adım 168.\\
+\textbf{Ne yapacaksın:}
+\begin{itemize}
+    \item Domain Cloudflare'e DNS bağla.
+    \item Proxy ON.
+    \item WAF rules.
+\end{itemize}
+\textbf{Bittiği nasıl anlaşılır:} \texttt{api.evlb.app} HTTPS.
+
+\adim{Monitoring --- Grafana + Prometheus + Loki}
+\textbf{Niye:} Production'da ne oluyor görmeden çalıştırma.\\
+\textbf{Önce:} Adım 168.\\
+\textbf{Ne yapacaksın:}
+\begin{itemize}
+    \item Grafana Cloud (free tier) ya da self-host.
+    \item Prometheus exporter: FastAPI metrics, Postgres metrics, Redis.
+    \item Loki: log aggregation.
+\end{itemize}
+\textbf{Bittiği nasıl anlaşılır:} Grafana dashboard'unda CPU/RAM/req/s.
+
+\adim{PagerDuty / Opsgenie alarm}
+\textbf{Niye:} Gece 3'te sistem patlarsa biri uyanmalı.\\
+\textbf{Önce:} Adım 171.\\
+\textbf{Ne yapacaksın:}
+\begin{itemize}
+    \item Free Opsgenie 5 user.
+    \item On-call rotation: 3 kurucu haftalık dönüşüm.
+    \item Alarm: response time $>$ 1 sn, error rate $>$ \%5, DB unreachable.
+\end{itemize}
+\textbf{Bittiği nasıl anlaşılır:} Test alarmı SMS/aramayla geliyor.
+
+\adim{Backup automation}
+\textbf{Niye:} Disaster için (Faz 6'daki manual prosedürün otomasyonu).\\
+\textbf{Önce:} Adım 115.\\
+\textbf{Ne yapacaksın:}
+\begin{itemize}
+    \item Cron container: gece 03:00 \texttt{pg\_dump} → S3 (Hetzner Storage Box).
+    \item Aylık restore tatbikatı (yeni VM, restore, smoke test).
+\end{itemize}
+\textbf{Bittiği nasıl anlaşılır:} Otomatik backup/restore çalışıyor.
+
+\adim{Staging environment}
+\textbf{Niye:} Production'a önce staging'de dene.\\
+\textbf{Önce:} Adım 169.\\
+\textbf{Ne yapacaksın:}
+\begin{itemize}
+    \item İkinci Hetzner server (CX22).
+    \item \texttt{develop} branch → staging deploy.
+    \item Staging'de manuel test geçmeden production'a gitme kuralı.
+\end{itemize}
+\textbf{Bittiği nasıl anlaşılır:} \texttt{staging.evlb.app} canlı.
+
+\adim{Synthetic monitoring}
+\textbf{Niye:} ``API çalışıyor mu?'' soru bile vakit alıyor.\\
+\textbf{Önce:} Adım 171.\\
+\textbf{Ne yapacaksın:}
+\begin{itemize}
+    \item Uptimerobot (free 50 monitor).
+    \item Endpoint: \texttt{/health} her 5 dk.
+    \item OCPP heartbeat sentetik bağlantı (her 10 dk).
+\end{itemize}
+\textbf{Bittiği nasıl anlaşılır:} Uptimerobot dashboard yeşil.
+
+% ===================================================================
+\newpage
+\section{FAZ 11 --- Pilot Saha Kurulumu (Adım 176--180)}
+
+\textit{Aylar süren teknik hazırlığın gerçek dünyaya çıktığı an. İlk sahayı çok dikkatli kur, çünkü ilk referans odur.}
+
+\adim{Saha öncesi teknik denetim}
+\textbf{Niye:} Sürpriz = kötü ilk izlenim.\\
+\textbf{Önce:} Adım 175.\\
+\textbf{Ne yapacaksın:}
+\begin{itemize}
+    \item Saha ziyareti: trafo gücü, mevcut chargerlar (vendor, model, OCPP versiyonu), ağ altyapısı, sayaç tipi.
+    \item Risk listesi (kablo eksiği, sayaç eski, charger firmware antika).
+    \item Ön teknik rapor (1-2 sayfa).
+\end{itemize}
+\textbf{Bittiği nasıl anlaşılır:} Müşteri bu raporu onaylıyor.
+
+\adim{Saha gateway donanım hazırlığı}
+\textbf{Niye:} Pi + Janitza + switch sahaya gitmeden lab'da test edilmeli.\\
+\textbf{Önce:} Adım 75.\\
+\textbf{Ne yapacaksın:}
+\begin{itemize}
+    \item ``Saha kit'' --- DIN ray pano, Pi gateway, Janitza, switch, kablolar.
+    \item Lab'da bir gün full smoke test.
+    \item Kargo + saha yer keşif.
+\end{itemize}
+\textbf{Bittiği nasıl anlaşılır:} Kit kargoda; kurulum tarihi sabit.
+
+\adim{Saha kurulum (1 gün)}
+\textbf{Niye:} Elektrikçi + bizim ekibimiz; aksamasın.\\
+\textbf{Önce:} Adım 177.\\
+\textbf{Ne yapacaksın:}
+\begin{itemize}
+    \item AG pano içine Janitza takılır (CT'ler ana hatta clamp).
+    \item Pi gateway DIN ray.
+    \item Switch ile charger ağı izole.
+    \item Charger'ların OCPP URL'i bizim CSMS'e yönlendirilir.
+\end{itemize}
+\textbf{Bittiği nasıl anlaşılır:} Tüm chargerlar BootNotification gönderiyor; Janitza Modbus okunuyor; bulutta veri akıyor.
+
+\adim{Shadow mode (ilk 4 hafta)}
+\textbf{Niye:} Kontrol etme, sadece veri biriktir; algoritma kararları ``öneri'' modunda.\\
+\textbf{Önce:} Adım 178.\\
+\textbf{Ne yapacaksın:}
+\begin{itemize}
+    \item Site config: \texttt{control\_mode=shadow}.
+    \item Algoritma çıktıları DB'ye log'lanır, charger'a gönderilmez.
+    \item Haftalık ``öneriler dosyası'' müşteriyle paylaş.
+\end{itemize}
+\textbf{Bittiği nasıl anlaşılır:} 4 hafta sonra:
+\begin{itemize}
+    \item En az 30K dakikalık güvenilir veri var.
+    \item Tahmin modeli site-specific fine-tune edildi.
+    \item Müşteri ``algoritma kararları mantıklı'' onayı verdi.
+\end{itemize}
+
+\adim{Control mode aç + ilk öncesi-sonrası raporu}
+\textbf{Niye:} Müşteriye gerçek değer kanıtı.\\
+\textbf{Önce:} Adım 179.\\
+\textbf{Ne yapacaksın:}
+\begin{itemize}
+    \item Site config: \texttt{control\_mode=active}.
+    \item İlk 2 hafta yarı-yarıya A/B (gün bazlı): yarısı algoritma, yarısı baseline.
+    \item 30 gün sonra ilk müşteri raporu:
+        \begin{itemize}
+            \item Trafo aşım dakikası: $X \to Y$ ($-\%Z$).
+            \item Aylık tahmin tasarruf: TL $W$.
+            \item Ortalama bekleme süresi: $A \to B$ dk.
+            \item Charger başına servis: $C \to D$ araç/saat.
+        \end{itemize}
+\end{itemize}
+\textbf{Bittiği nasıl anlaşılır:} Müşteri raporu kabul + ilk ücretli sözleşme imza.
+
+% ===================================================================
+\newpage
+\section{Sonraki 5 Adım --- Faz 11 sonrası (özet)}
+
+180. adımdan sonra gelen ana iş:
+\begin{itemize}
+    \item Faz 12: 2--5. müşteriye scale (her birinde Faz 11'i tekrar).
+    \item Faz 13: ISO 27001 sertifikasyon.
+    \item Faz 14: OCPP 2.0.1 desteği.
+    \item Faz 15: Demand response modülü (BEDAŞ pilot).
+    \item Faz 16: Harmonik analiz, PV/ESS optimizasyonu (V2G hazırlığı).
+\end{itemize}
+
+% ===================================================================
+\section{Genel Notlar}
+
+\subsection{Paralelize Edilebilen Adımlar (3 Kurucu)}
+
+\begin{tabularx}{\textwidth}{X X X}
+\toprule
+\textbf{CTO/Algoritma} & \textbf{Embedded/OCPP/Saha} & \textbf{CEO/Operasyon/Satış} \\
+\midrule
+Faz 1 (refactor) & Faz 3 (OCPP öğrenme) & Customer discovery (paralel) \\
+Faz 2 (tarife) & Faz 4 (donanım sipariş) & TÜBİTAK BiGG başvuru \\
+Faz 5 (backend) & Faz 6 (telemetri pipeline) & Hukuk + sözleşme şablonları \\
+Faz 7 (ML) & Faz 11 (saha kurulum) & Pre-seed pitch + yatırımcı görüşme \\
+Faz 8 (algoritma) & Charger üreticileri pazarlık & ROI raporu satış pitch \\
+\bottomrule
+\end{tabularx}
+
+\subsection{Hangi Adımı Ne Zaman Yapacaksın --- Bağımlılık Grafiği}
+
+Adımlar lineer numaralandırılmış olsa da bağımlılık dikkate alınırsa:
+\begin{itemize}
+    \item \textbf{Önce sıraya bağlı kalan zincir:} 1--15 → 16--30 → 76--100 → 141--150.
+    \item \textbf{Paralel girişler:} 31--40 (tarife), 41--60 (OCPP), 116--140 (ML).
+    \item \textbf{Donanım kritik path:} 61--75 (charger sipariş 6 hafta termin) → 176--180.
+\end{itemize}
+
+\subsection{Bittiği Nasıl Anlaşılır (Genel)}
+
+Her adımda 3 kontrol:
+\begin{enumerate}
+    \item \textbf{Kabul kriteri (acceptance test):} bu adımda ne çalışmalı.
+    \item \textbf{Git commit:} \texttt{git log} ile takip.
+    \item \textbf{Linear / Notion:} status = Done.
+\end{enumerate}
+
+Her hafta sonu \textbf{adım sayısı progress raporu}: ``180 adımdan X tamamlandı.'' Yatırımcı update'inde de aynı rakam.
+
+\subsection{Sıkıştığında Ne Yaparsın}
+
+\begin{itemize}
+    \item \textbf{1 saat saplandın:} arkadaşına anlat (rubber-duck), çoğu zaman çözüm gelir.
+    \item \textbf{4 saat saplandın:} Stack Overflow, GitHub Issues, ChatGPT/Claude ile pair-programming.
+    \item \textbf{1 gün saplandın:} adımı geçici olarak \texttt{TODO} işaretle, sonraki bağımsız adıma geç. Cumartesi tekrar bak.
+    \item \textbf{1 hafta saplandın:} adım çok büyük; alt-adımlara böl. Ya da bağımlılık yanlış.
+\end{itemize}
+
+\subsection{Final Hatırlatma}
+
+\begin{itemize}
+    \item \textbf{Asla 3 adımı birden yapma.} Atomik.
+    \item \textbf{Her commit küçük.} ``İdeal sayının altı PR'da iki sayfa diff.''
+    \item \textbf{Test yazmadan ileri gitme.} Faz 1'den sonra her adım test'le birlikte.
+    \item \textbf{Documentation = kod kadar önemli.} README + ADR + kod içi docstring.
+    \item \textbf{İlerleme = adım sayısı.} ``Bugün ne yaptın?'' sorusuna ``adım 47 ve 48'i bitirdim'' demek.
+\end{itemize}
+
+\vspace{0.8cm}
+\begin{center}
+\textit{180 adımı sırayla bitirirsen, 12 ay sonunda elinde\\
+\textbf{çalışan bir bulut servisi}, \textbf{1+ ödeyen pilot müşteri}, \textbf{rakipten farklılaşmış bir ürün} olur.\\[6pt]
+Sıfırdan başlayan biri için bu pek mümkün değil --- 6 ayda 90 adım gerçekçi.\\
+Ama her adım atılmaz değil; sadece sıralı atılırsa atılabilir.}\\[1cm]
+\textit{Sürüm v1, \today --- Adım Adım Teknik Roadmap.}
+\end{center}
+
+\end{document}

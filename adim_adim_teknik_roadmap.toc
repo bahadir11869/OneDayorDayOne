@@ -1,0 +1,21 @@
+\babel@toc {turkish}{}\relax 
+\contentsline {section}{\numberline {1}Bu Belge Nasıl Kullanılır}{2}{section.1}%
+\contentsline {section}{\numberline {2}FAZ 0 --- Geliştirme Ortamı Kurulumu (Adım 1--15)}{3}{section.2}%
+\contentsline {section}{\numberline {3}FAZ 1 --- Mevcut Prototipi Proje Haline Getirme (Adım 16--30)}{8}{section.3}%
+\contentsline {section}{\numberline {4}FAZ 2 --- Maliyet \& Tarife Modülü (Adım 31--40)}{13}{section.4}%
+\contentsline {section}{\numberline {5}FAZ 3 --- OCPP'yi Sıfırdan Öğrenme (Adım 41--60)}{16}{section.5}%
+\contentsline {section}{\numberline {6}FAZ 4 --- Donanım Lab Kurulumu (Adım 61--75)}{21}{section.6}%
+\contentsline {section}{\numberline {7}FAZ 5 --- Backend MVP (Adım 76--100)}{25}{section.7}%
+\contentsline {section}{\numberline {8}FAZ 6 --- Telemetri Pipeline (Adım 101--115)}{31}{section.8}%
+\contentsline {section}{\numberline {9}FAZ 7 --- Yük Tahmini (Adım 116--140)}{35}{section.9}%
+\contentsline {section}{\numberline {10}FAZ 8 --- Algoritmayı Production'a Port (Adım 141--150)}{41}{section.10}%
+\contentsline {section}{\numberline {11}FAZ 9 --- Operatör Dashboard (Adım 151--165)}{44}{section.11}%
+\contentsline {section}{\numberline {12}FAZ 10 --- Bulut Deploy + CI/CD (Adım 166--175)}{47}{section.12}%
+\contentsline {section}{\numberline {13}FAZ 11 --- Pilot Saha Kurulumu (Adım 176--180)}{50}{section.13}%
+\contentsline {section}{\numberline {14}Sonraki 5 Adım --- Faz 11 sonrası (özet)}{52}{section.14}%
+\contentsline {section}{\numberline {15}Genel Notlar}{52}{section.15}%
+\contentsline {subsection}{\numberline {15.1}Paralelize Edilebilen Adımlar (3 Kurucu)}{52}{subsection.15.1}%
+\contentsline {subsection}{\numberline {15.2}Hangi Adımı Ne Zaman Yapacaksın --- Bağımlılık Grafiği}{52}{subsection.15.2}%
+\contentsline {subsection}{\numberline {15.3}Bittiği Nasıl Anlaşılır (Genel)}{52}{subsection.15.3}%
+\contentsline {subsection}{\numberline {15.4}Sıkıştığında Ne Yaparsın}{52}{subsection.15.4}%
+\contentsline {subsection}{\numberline {15.5}Final Hatırlatma}{53}{subsection.15.5}%
