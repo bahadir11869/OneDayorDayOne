@@ -209,23 +209,93 @@ def build_snapshots(schedule: dict, bg_load: np.ndarray, config: ScenarioConfig)
 # ══════════════════════════════════════════════════════════════════
 
 def run_unmanaged(schedule: dict, bg_load: np.ndarray, config: ScenarioConfig) -> dict:
+    """Algoritmasız simülasyon — güç profili + araç logu döner."""
     policy   = config.to_grid_limit_policy()
     stations = copy.deepcopy(config.layout.stations)
     ctrl     = UnmanagedController(stations, policy, bg_load)
+    vehicle_events: dict = {}
+
     for minute in range(1440):
         for ev in schedule.get(minute, []):
             ctrl.queue.append(ev)
-        ctrl.step(minute)
+            vehicle_events[ev.session_id] = {
+                "session_id":           ev.session_id,
+                "model_name":           ev.model_name,
+                "battery_kwh":          ev.battery_capacity_kwh,
+                "arrival_minute":       minute,
+                "arrival_time":         _fmt(minute),
+                "initial_soc_pct":      round(ev.initial_soc * 100, 1),
+                "target_soc_pct":       round(ev.target_soc * 100, 1),
+                "charge_start_minute":  None,
+                "charge_start_time":    None,
+                "wait_minutes":         None,
+                "charge_minutes":       None,
+                "departure_time":       None,
+                "final_soc_pct":        None,
+                "energy_delivered_kwh": None,
+                "status":               "Kuyrukta",
+            }
+
+        # Boş istasyonlara araç ata
+        for s in ctrl.stations:
+            if not s.current_ev and ctrl.queue:
+                s.current_ev = ctrl.queue.pop(0)
+                s.current_ev.charge_start_minute = minute
+                sid = s.current_ev.session_id
+                vehicle_events[sid]["charge_start_minute"] = minute
+                vehicle_events[sid]["charge_start_time"]   = _fmt(minute)
+                vehicle_events[sid]["wait_minutes"]         = minute - vehicle_events[sid]["arrival_minute"]
+                vehicle_events[sid]["status"]               = "Şarjda"
+
+        tod     = minute % 1440
+        is_peak = policy.peak_start_min <= tod < policy.peak_end_min
+        limit   = policy.evening_peak_kw if is_peak else policy.trafo_max_kw
+        bg      = float(bg_load[minute])
+        allocs  = {s.station_id: s.effective_max_power_kw() for s in ctrl.stations}
+
+        for s in ctrl.stations:
+            if s.current_ev:
+                s.current_ev.apply_power(allocs[s.station_id], minute)
+                if s.current_ev.is_satisfied:
+                    s.current_ev.departure_minute = minute
+                    ctrl.completed.append(s.current_ev)
+                    sid = s.current_ev.session_id
+                    vehicle_events[sid].update({
+                        "departure_time":       _fmt(minute),
+                        "charge_minutes":       minute - (s.current_ev.charge_start_minute or minute),
+                        "final_soc_pct":        round(s.current_ev.current_soc * 100, 1),
+                        "energy_delivered_kwh": round(s.current_ev.energy_delivered_kwh, 2),
+                        "status":               "Tamamlandı",
+                    })
+                    s.current_ev = None
+
+        ev_load = float(sum(allocs.values()))
+        ctrl.power_log.append(bg + ev_load)
+        ctrl.limit_log.append(limit)
+
+    for s in ctrl.stations:
+        if s.current_ev:
+            ev = s.current_ev
+            vehicle_events[ev.session_id].update({
+                "final_soc_pct":        round(ev.current_soc * 100, 1),
+                "energy_delivered_kwh": round(ev.energy_delivered_kwh, 2),
+                "charge_minutes":       1440 - (ev.charge_start_minute or 1440),
+                "status":               "Yarım Kaldı",
+            })
+    for ev in ctrl.queue:
+        vehicle_events[ev.session_id]["status"] = "Şarj Edilemedi"
+
     p    = np.array(ctrl.power_log)
     lim  = np.array(ctrl.limit_log)
     over = p > lim
     return {
-        "power_log":       [round(float(v), 1) for v in p],
-        "completed_count": int(len(ctrl.completed)),
+        "power_log":        [round(float(v), 1) for v in p],
+        "completed_count":  int(len(ctrl.completed)),
         "overload_minutes": int(over.sum()),
-        "total_energy":    round(float(sum(e.energy_delivered_kwh for e in ctrl.completed)), 1),
-        "avg_wait":        round(float(np.mean([e.wait_time_minutes for e in ctrl.completed])) if ctrl.completed else 0.0, 1),
-        "peak_power":      round(float(p.max()), 1),
+        "total_energy":     round(float(sum(e.energy_delivered_kwh for e in ctrl.completed)), 1),
+        "avg_wait":         round(float(np.mean([e.wait_time_minutes for e in ctrl.completed])) if ctrl.completed else 0.0, 1),
+        "peak_power":       round(float(p.max()), 1),
+        "vehicle_log":      sorted(vehicle_events.values(), key=lambda x: x["arrival_minute"]),
     }
 
 
@@ -277,9 +347,9 @@ def load_and_simulate(scenario_key: str, generate_new: bool):
         schedule = ArrivalGenerator(config.fleet).generate_arrivals(rng)
         bg_load  = BackgroundLoadGenerator.generate(np.random.default_rng(101), config.environment)
 
-    srpt_snaps, vehicle_log = build_snapshots(copy.deepcopy(schedule), bg_load, config)
-    unmanaged               = run_unmanaged(copy.deepcopy(schedule), bg_load, config)
-    return srpt_snaps, unmanaged, vehicle_log
+    srpt_snaps, srpt_vlog = build_snapshots(copy.deepcopy(schedule), bg_load, config)
+    unmanaged              = run_unmanaged(copy.deepcopy(schedule), bg_load, config)
+    return srpt_snaps, unmanaged, srpt_vlog, unmanaged["vehicle_log"]
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -373,10 +443,15 @@ def render_power_chart(snapshots: list, unmanaged: dict, current_minute: int) ->
     n          = current_minute + 1
     times_done = all_times[:n]
 
-    bg_data       = [s["bg_load_kw"]                         for s in snapshots[:n]]
-    srpt_total    = [s["bg_load_kw"] + s["ev_load_kw"]       for s in snapshots[:n]]
-    unman_total   = unmanaged["power_log"][:n]
-    limit_full    = [s["grid_limit_kw"] for s in snapshots]
+    bg_data     = [s["bg_load_kw"] for s in snapshots[:n]]
+    limit_full  = [s["grid_limit_kw"] for s in snapshots]
+    unman_total = unmanaged["power_log"][:n]
+
+    # SRPT: sadece EV yükü > 0 olan dakikalarda çiz; öncesi None bırak
+    srpt_total = [
+        (s["bg_load_kw"] + s["ev_load_kw"]) if s["ev_load_kw"] > 0.01 else None
+        for s in snapshots[:n]
+    ]
 
     fig = go.Figure()
 
@@ -388,7 +463,7 @@ def render_power_chart(snapshots: list, unmanaged: dict, current_minute: int) ->
         hovertemplate="%{y:.0f} kW<extra>Grid Limiti</extra>",
     ))
 
-    # ── Algoritmasız toplam (tüm gün, ince çizgi) ──
+    # ── Algoritmasız toplam ──
     if n > 1:
         fig.add_trace(go.Scatter(
             x=times_done, y=unman_total,
@@ -402,17 +477,18 @@ def render_power_chart(snapshots: list, unmanaged: dict, current_minute: int) ->
     fig.add_trace(go.Scatter(
         x=times_done, y=bg_data,
         fill="tozeroy", name="Baz Yük",
-        line=dict(color="#94a3b8", width=2),
-        fillcolor="rgba(148,163,184,0.30)",
+        line=dict(color="#94a3b8", width=2.5),
+        fillcolor="rgba(148,163,184,0.35)",
         hovertemplate="%{y:.1f} kW<extra>Baz Yük</extra>",
     ))
 
-    # ── SRPT toplam (dolu alan, baz üstü) ──
+    # ── SRPT toplam (baz üstü alan; boşluklar None'dan oluşur) ──
     fig.add_trace(go.Scatter(
         x=times_done, y=srpt_total,
-        fill="tonexty", name="SRPT Toplam",
+        fill="tonexty", name="SRPT EV Yükü",
         line=dict(color="#38bdf8", width=2.5),
-        fillcolor="rgba(56,189,248,0.35)",
+        fillcolor="rgba(56,189,248,0.40)",
+        connectgaps=False,
         hovertemplate="%{y:.1f} kW<extra>SRPT Toplam</extra>",
     ))
 
@@ -423,6 +499,7 @@ def render_power_chart(snapshots: list, unmanaged: dict, current_minute: int) ->
     )
 
     fig.update_layout(
+        uirevision="power_chart",   # zoom state korunur, rerun'da sıfırlanmaz
         height=270,
         margin=dict(l=0, r=0, t=8, b=0),
         paper_bgcolor="rgba(0,0,0,0)",
@@ -484,19 +561,70 @@ def render_srpt_decisions(decisions: list):
             st.divider()
 
 
-def render_vehicle_log(vehicle_log: list):
-    with st.expander("📋 Araç Logları", expanded=False):
-        if not vehicle_log:
-            st.info("Henüz log yok.")
-            return
+def _build_live_log(vehicle_log: list, snap: dict, current_minute: int) -> list:
+    """Verilen vehicle_log'u current_minute'a göre filtrele ve canlı station verisiyle güncelle."""
+    arrived = {v["session_id"]: dict(v) for v in vehicle_log if v["arrival_minute"] <= current_minute}
+    for st_data in snap["stations"]:
+        if st_data["occupied"] and st_data["ev"]:
+            ev  = st_data["ev"]
+            sid = ev["session_id"]
+            if sid in arrived:
+                arrived[sid].update({
+                    "final_soc_pct":        round(ev["current_soc"] * 100, 1),
+                    "energy_delivered_kwh": ev["energy_delivered_kwh"],
+                    "charge_minutes":       ev["charge_time_minutes"],
+                    "status":               "Şarjda",
+                })
+    for qev in snap["queue"]:
+        sid = qev["session_id"]
+        if sid in arrived:
+            arrived[sid]["status"] = "Kuyrukta"
+    return sorted(arrived.values(), key=lambda x: x["arrival_minute"])
 
-        # Filtre
+
+def _log_to_df(log_list: list, sort_by: str, status_filter: list) -> pd.DataFrame:
+    filtered = [v for v in log_list if v["status"] in status_filter] if status_filter else log_list
+    if sort_by == "Bekleme (uzundan kısaya)":
+        filtered = sorted(filtered, key=lambda x: x.get("wait_minutes") or 0, reverse=True)
+    elif sort_by == "Enerji (büyükten küçüğe)":
+        filtered = sorted(filtered, key=lambda x: x.get("energy_delivered_kwh") or 0, reverse=True)
+    rows = [{
+        "Araç ID":          v["session_id"],
+        "Model":            v["model_name"],
+        "Batarya (kWh)":    v["battery_kwh"],
+        "Geliş":            v["arrival_time"],
+        "Şarj Başlangıç":   v.get("charge_start_time") or "-",
+        "Ayrılış":          v.get("departure_time") or "-",
+        "Bekleme (dk)":     v["wait_minutes"] if v.get("wait_minutes") is not None else "-",
+        "Şarj Süresi (dk)": v.get("charge_minutes") if v.get("charge_minutes") is not None else "-",
+        "İlk SoC (%)":      v["initial_soc_pct"],
+        "Son SoC (%)":      v.get("final_soc_pct") or "-",
+        "Verilen (kWh)":    v.get("energy_delivered_kwh") or "-",
+        "Durum":            v["status"],
+    } for v in filtered]
+    return pd.DataFrame(rows) if rows else pd.DataFrame()
+
+
+def _status_color(val):
+    return {
+        "Tamamlandı":     "color: #22c55e",
+        "Yarım Kaldı":    "color: #f59e0b",
+        "Şarj Edilemedi": "color: #ef4444",
+        "Şarjda":         "color: #60a5fa",
+        "Kuyrukta":       "color: #94a3b8",
+    }.get(val, "")
+
+
+def render_vehicle_log(srpt_log: list, unman_log: list, snap: dict, current_minute: int):
+    """SRPT | Algoritmasız | Karşılaştırma tablarıyla araç logunu göster."""
+    label = f"📋 Araç Logları  ({current_minute // 60:02d}:{current_minute % 60:02d} itibarıyla)"
+    with st.expander(label, expanded=False):
+        # Filtre kontrolları (paylaşılan)
         fc1, fc2 = st.columns(2)
         with fc1:
             status_filter = st.multiselect(
-                "Durum filtrele",
-                ["Tamamlandı", "Yarım Kaldı", "Şarj Edilemedi", "Kuyrukta", "Şarjda"],
-                default=["Tamamlandı", "Yarım Kaldı", "Şarj Edilemedi"],
+                "Durum", ["Tamamlandı", "Yarım Kaldı", "Şarj Edilemedi", "Kuyrukta", "Şarjda"],
+                default=["Tamamlandı", "Şarjda", "Kuyrukta", "Şarj Edilemedi"],
                 key="log_status_filter",
             )
         with fc2:
@@ -505,50 +633,144 @@ def render_vehicle_log(vehicle_log: list):
                 key="log_sort",
             )
 
-        filtered = [v for v in vehicle_log if v["status"] in status_filter] if status_filter else vehicle_log
+        srpt_live  = _build_live_log(srpt_log,  snap, current_minute)
+        unman_live = _build_live_log(unman_log, snap, current_minute)
 
-        if sort_by == "Bekleme (uzundan kısaya)":
-            filtered = sorted(filtered, key=lambda x: x.get("wait_minutes") or 0, reverse=True)
-        elif sort_by == "Enerji (büyükten küçüğe)":
-            filtered = sorted(filtered, key=lambda x: x.get("energy_delivered_kwh") or 0, reverse=True)
+        tab_srpt, tab_unman, tab_diff = st.tabs(["⚡ SRPT", "🔴 Algoritmasız", "📊 Karşılaştırma"])
 
+        # ── Tab 1: SRPT ───────────────────────────────────────────
+        with tab_srpt:
+            df = _log_to_df(srpt_live, sort_by, status_filter)
+            if df.empty:
+                st.info("Gösterilecek araç yok.")
+            else:
+                st.dataframe(df.style.map(_status_color, subset=["Durum"]), use_container_width=True, hide_index=True)
+                csv = df.to_csv(index=False, encoding="utf-8-sig")
+                st.download_button("⬇️ CSV (SRPT)", csv, file_name="srpt_arac_log.csv", mime="text/csv")
+
+        # ── Tab 2: Algoritmasız ───────────────────────────────────
+        with tab_unman:
+            df2 = _log_to_df(unman_live, sort_by, status_filter)
+            if df2.empty:
+                st.info("Gösterilecek araç yok.")
+            else:
+                st.dataframe(df2.style.map(_status_color, subset=["Durum"]), use_container_width=True, hide_index=True)
+                csv2 = df2.to_csv(index=False, encoding="utf-8-sig")
+                st.download_button("⬇️ CSV (Algoritmasız)", csv2, file_name="unmanaged_arac_log.csv", mime="text/csv")
+
+        # ── Tab 3: Karşılaştırma ──────────────────────────────────
+        with tab_diff:
+            srpt_map  = {v["session_id"]: v for v in srpt_live}
+            unman_map = {v["session_id"]: v for v in unman_live}
+            all_ids   = sorted(set(srpt_map) | set(unman_map),
+                               key=lambda sid: (srpt_map.get(sid) or unman_map.get(sid))["arrival_minute"])
+
+            diff_rows = []
+            for sid in all_ids:
+                sv = srpt_map.get(sid)
+                uv = unman_map.get(sid)
+                if not sv or not uv:
+                    continue
+
+                def _num(d, key):
+                    v = d.get(key)
+                    return float(v) if isinstance(v, (int, float)) else None
+
+                sw  = _num(sv, "wait_minutes");    uw  = _num(uv, "wait_minutes")
+                sc  = _num(sv, "charge_minutes");  uc  = _num(uv, "charge_minutes")
+                se  = _num(sv, "energy_delivered_kwh"); ue = _num(uv, "energy_delivered_kwh")
+
+                def _diff(a, b):
+                    if a is None or b is None: return "-"
+                    return f"{a - b:+.0f}"
+
+                diff_rows.append({
+                    "Araç ID":                sid,
+                    "Model":                  sv["model_name"],
+                    "Geliş":                  sv["arrival_time"],
+                    "Bekleme SRPT (dk)":      sw if sw is not None else "-",
+                    "Bekleme Alg.sız (dk)":   uw if uw is not None else "-",
+                    "Bekleme Farkı (dk)":     _diff(sw, uw),
+                    "Şarj Süresi SRPT (dk)":  sc if sc is not None else "-",
+                    "Şarj Süresi Alg.sız (dk)": uc if uc is not None else "-",
+                    "Şarj Süresi Farkı (dk)": _diff(sc, uc),
+                    "Enerji SRPT (kWh)":      se if se is not None else "-",
+                    "Enerji Alg.sız (kWh)":   ue if ue is not None else "-",
+                    "Enerji Farkı (kWh)":     _diff(se, ue),
+                    "Durum SRPT":             sv["status"],
+                    "Durum Alg.sız":          uv["status"],
+                })
+
+            if not diff_rows:
+                st.info("Karşılaştırılacak araç yok.")
+            else:
+                df3 = pd.DataFrame(diff_rows)
+
+                def _color_diff(val):
+                    if not isinstance(val, str) or not val.startswith(("+", "-")):
+                        return ""
+                    try:
+                        n = float(val)
+                        # Bekleme/Şarj farkı: negatif = SRPT daha iyi
+                        return "color: #22c55e" if n < 0 else ("color: #ef4444" if n > 0 else "")
+                    except Exception:
+                        return ""
+
+                def _color_energy_diff(val):
+                    if not isinstance(val, str) or not val.startswith(("+", "-")):
+                        return ""
+                    try:
+                        n = float(val)
+                        # Enerji farkı: pozitif = SRPT daha fazla enerji verdi = iyi
+                        return "color: #22c55e" if n > 0 else ("color: #ef4444" if n < 0 else "")
+                    except Exception:
+                        return ""
+
+                styled3 = (
+                    df3.style
+                    .map(_color_diff,        subset=["Bekleme Farkı (dk)", "Şarj Süresi Farkı (dk)"])
+                    .map(_color_energy_diff, subset=["Enerji Farkı (kWh)"])
+                    .map(_status_color,      subset=["Durum SRPT", "Durum Alg.sız"])
+                )
+                st.caption("Fark = SRPT − Algoritmasız  |  🟢 negatif bekleme/şarj = SRPT daha hızlı  |  🟢 pozitif enerji = SRPT daha fazla şarj etti")
+                st.dataframe(styled3, use_container_width=True, hide_index=True)
+                csv3 = df3.to_csv(index=False, encoding="utf-8-sig")
+                st.download_button("⬇️ CSV (Karşılaştırma)", csv3, file_name="karsilastirma.csv", mime="text/csv")
+
+
+def render_srpt_all_decisions(snapshots: list, current_minute: int):
+    """O ana kadar verilen tüm SRPT kararlarını tablo olarak göster."""
+    with st.expander(f"📜 Tüm SRPT Karar Geçmişi  (0–{_fmt(current_minute)})", expanded=False):
         rows = []
-        for v in filtered:
-            rows.append({
-                "Araç ID":       v["session_id"],
-                "Model":         v["model_name"],
-                "Batarya (kWh)": v["battery_kwh"],
-                "Geliş":         v["arrival_time"],
-                "Şarj Başlangıç": v.get("charge_start_time") or "-",
-                "Ayrılış":       v.get("departure_time") or "-",
-                "Bekleme (dk)":  v.get("wait_minutes") if v.get("wait_minutes") is not None else "-",
-                "Şarj Süresi (dk)": v.get("charge_minutes") if v.get("charge_minutes") is not None else "-",
-                "İlk SoC (%)":   v["initial_soc_pct"],
-                "Son SoC (%)":   v.get("final_soc_pct") or "-",
-                "Verilen (kWh)": v.get("energy_delivered_kwh") or "-",
-                "Durum":         v["status"],
-            })
+        for s in snapshots[:current_minute + 1]:
+            for d in s["srpt_decisions"]:
+                rows.append({
+                    "Saat":              s["time_str"],
+                    "İstasyon":          d["station_id"],
+                    "Araç":              d["session_id"],
+                    "Model":             d["model_name"],
+                    "Güç (kW)":          d["power_kw"],
+                    "SoC (%)":           d["current_soc_pct"],
+                    "Kalan (kWh)":       d["energy_needed_kwh"],
+                    "Eff. Kalan (kWh)":  d["effective_energy_kwh"],
+                    "Bekleme (dk)":      d["wait_minutes"],
+                    "Bonus":             "✓" if d["has_wait_bonus"] else "",
+                    "Bütçe Yok":         "⛔" if d["no_budget"] else "",
+                })
+
+        if not rows:
+            st.info("Henüz karar alınmadı.")
+            return
 
         df = pd.DataFrame(rows)
+        st.caption(f"Toplam **{len(rows)}** karar — son 300 gösteriliyor")
 
-        def color_status(val):
-            colors = {
-                "Tamamlandı":      "color: #22c55e",
-                "Yarım Kaldı":     "color: #f59e0b",
-                "Şarj Edilemedi":  "color: #ef4444",
-                "Şarjda":          "color: #60a5fa",
-                "Kuyrukta":        "color: #94a3b8",
-            }
-            return colors.get(val, "")
+        def color_budget(val):
+            return "color: #ef4444" if val == "⛔" else ""
 
-        styled = df.style.map(color_status, subset=["Durum"])
-        st.dataframe(styled, use_container_width=True, hide_index=True)
-
-        csv = df.to_csv(index=False, encoding="utf-8-sig")
-        st.download_button(
-            "⬇️ CSV İndir", csv,
-            file_name="srpt_arac_log.csv",
-            mime="text/csv",
+        st.dataframe(
+            df.tail(300).style.map(color_budget, subset=["Bütçe Yok"]),
+            use_container_width=True, hide_index=True,
         )
 
 
@@ -569,9 +791,11 @@ def main():
     """, unsafe_allow_html=True)
 
     for k, v in [
-        ("snapshots", None), ("unmanaged", None), ("vehicle_log", None),
+        ("snapshots", None), ("unmanaged", None),
+        ("vehicle_log", None), ("unmanaged_vlog", None),
         ("frame", 0), ("running", False),
         ("replay_start", 0), ("replay_end", 1439),
+        ("last_frame_time", None),
     ]:
         if k not in st.session_state:
             st.session_state[k] = v
@@ -588,10 +812,11 @@ def main():
         if st.button("🔄 Simülasyonu Hazırla", use_container_width=True, type="primary"):
             with st.spinner("Simülasyon çalışıyor (SRPT + Algoritmasız)..."):
                 try:
-                    snaps, unman, vlog = load_and_simulate(scenario_key, generate_new)
-                    st.session_state.snapshots   = snaps
-                    st.session_state.unmanaged   = unman
-                    st.session_state.vehicle_log = vlog
+                    snaps, unman, vlog, uvlog = load_and_simulate(scenario_key, generate_new)
+                    st.session_state.snapshots      = snaps
+                    st.session_state.unmanaged      = unman
+                    st.session_state.vehicle_log    = vlog
+                    st.session_state.unmanaged_vlog = uvlog
                     st.session_state.frame   = 0
                     st.session_state.running = False
                 except Exception as e:
@@ -608,8 +833,9 @@ def main():
         with c1:
             if st.button("▶ Oynat", use_container_width=True):
                 if st.session_state.snapshots:
-                    st.session_state.frame   = st.session_state.replay_start
-                    st.session_state.running = True
+                    st.session_state.frame           = st.session_state.replay_start
+                    st.session_state.running         = True
+                    st.session_state.last_frame_time = None   # timer sıfırla
         with c2:
             if st.button("⏸ Dur", use_container_width=True):
                 st.session_state.running = False
@@ -637,10 +863,11 @@ def main():
 
         if st.button("▶ Bu Aralığı Oynat", use_container_width=True):
             if st.session_state.snapshots:
-                st.session_state.replay_start = r_start
-                st.session_state.replay_end   = r_end
-                st.session_state.frame        = r_start
-                st.session_state.running      = True
+                st.session_state.replay_start    = r_start
+                st.session_state.replay_end      = r_end
+                st.session_state.frame           = r_start
+                st.session_state.running         = True
+                st.session_state.last_frame_time = None
 
         st.divider()
         st.markdown("**Algoritma:** SRPT  \n*En az kalan enerjili araç önce.*  \n*15 dk+ bekleyene bekleme bonusu.*")
@@ -657,6 +884,7 @@ def main():
     snap     = st.session_state.snapshots[st.session_state.frame]
     unman    = st.session_state.unmanaged
     vlog     = st.session_state.vehicle_log
+    uvlog    = st.session_state.unmanaged_vlog
     last_snp = st.session_state.snapshots[-1]
 
     # ── Başlık ───────────────────────────────────────────────────
@@ -728,7 +956,11 @@ def main():
     with col_chart:
         st.markdown("### 📈 Güç Profili — 24 Saat")
         fig = render_power_chart(st.session_state.snapshots, unman, snap["minute"])
-        st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+        st.plotly_chart(fig, use_container_width=True, config={
+            "scrollZoom": True,
+            "displayModeBar": True,
+            "modeBarButtonsToRemove": ["lasso2d", "select2d", "autoScale2d"],
+        })
     with col_srpt:
         render_srpt_decisions(snap["srpt_decisions"])
 
@@ -749,19 +981,30 @@ def main():
     elif snap["minute"] > 0:
         st.markdown("<div style='color:#22c55e;font-size:0.9em;padding:4px 0'>✅ Kuyruk boş</div>", unsafe_allow_html=True)
 
-    # ── Araç logları ──────────────────────────────────────────────
-    if vlog:
-        render_vehicle_log(vlog)
+    # ── Araç logları + SRPT geçmişi ───────────────────────────────
+    if vlog and uvlog:
+        render_vehicle_log(vlog, uvlog, snap, snap["minute"])
+    render_srpt_all_decisions(st.session_state.snapshots, snap["minute"])
 
     # ── Animasyon ─────────────────────────────────────────────────
     if st.session_state.running:
-        time.sleep(1.0 / max(speed, 1))
         replay_end = st.session_state.get("replay_end", 1439)
-        if st.session_state.frame < replay_end:
-            st.session_state.frame += 1
-        else:
+        now        = time.time()
+        last       = st.session_state.last_frame_time or now
+        elapsed    = now - last
+
+        # Geçen sürede kaç frame ilerlememiz gerektiğini hesapla
+        to_advance = max(1, int(elapsed * speed))
+        new_frame  = min(st.session_state.frame + to_advance, replay_end)
+
+        st.session_state.frame           = new_frame
+        st.session_state.last_frame_time = now
+
+        if new_frame >= replay_end:
             st.session_state.running = False
-        st.rerun()
+        else:
+            time.sleep(0.05)   # ~20 fps sabit, hız frame adımıyla ayarlanır
+            st.rerun()
 
 
 if __name__ == "__main__":
