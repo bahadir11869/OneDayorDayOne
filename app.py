@@ -28,18 +28,23 @@ from models import EV, ScenarioConfig, DynamicGridLimitPolicy
 # ══════════════════════════════════════════════════════════════════
 
 def build_snapshots(schedule: dict, bg_load: np.ndarray, config: ScenarioConfig):
-    """AdaptiveSoC (termal mod) simülasyonu. (snapshots_list, vehicle_log_list) döner."""
+    """AdaptiveSoC (termal mod) simülasyonu.
+    Döner: (snapshots, vehicle_log, vehicle_temp_log)
+      vehicle_temp_log: {session_id: [(minute, temp_c), ...]}
+    """
     policy   = config.to_grid_limit_policy(use_dynamic=True, theta_hs_target=98.0)
     stations = copy.deepcopy(config.layout.stations)
     ctrl     = AdaptiveSoCController(
         stations, policy, bg_load,
         use_dynamic_grid_limit=True, use_aging_cost=True,
         w_urgency=1.0, w_aging=0.25, aging_throttle_threshold=3.0,
+        max_ramp_kw_per_min=30.0,
     )
-    is_thermal     = isinstance(policy, DynamicGridLimitPolicy)
-    snapshots      = []
-    overload_total = 0
-    vehicle_events = {}
+    is_thermal       = isinstance(policy, DynamicGridLimitPolicy)
+    snapshots        = []
+    overload_total   = 0
+    vehicle_events   = {}
+    vehicle_temp_log = {}   # {session_id: [(minute, temp_c), ...]}
 
     for minute in range(1440):
         for ev in schedule.get(minute, []):
@@ -92,6 +97,11 @@ def build_snapshots(schedule: dict, bg_load: np.ndarray, config: ScenarioConfig)
         for s in ctrl.stations:
             if s.current_ev:
                 s.current_ev.update_battery_temp(ambient_temp, allocs[s.station_id])
+                # Per-vehicle sıcaklık logu
+                sid = s.current_ev.session_id
+                if sid not in vehicle_temp_log:
+                    vehicle_temp_log[sid] = []
+                vehicle_temp_log[sid].append((minute, round(float(s.current_ev.battery_temp_c), 1)))
 
         # Termal durum anlık
         theta_hs    = float(policy.theta_hs)   if is_thermal else 0.0
@@ -209,12 +219,17 @@ def build_snapshots(schedule: dict, bg_load: np.ndarray, config: ScenarioConfig)
                     ctrl.completed.append(s.current_ev)
                     sid = s.current_ev.session_id
                     vehicle_events[sid].update({
-                        "departure_minute":     minute,
-                        "departure_time":       _fmt(minute),
-                        "charge_minutes":       minute - (s.current_ev.charge_start_minute or minute),
-                        "final_soc_pct":        round(s.current_ev.current_soc * 100, 1),
-                        "energy_delivered_kwh": round(s.current_ev.energy_delivered_kwh, 2),
-                        "status":               "Tamamlandı",
+                        "departure_minute":      minute,
+                        "departure_time":        _fmt(minute),
+                        "charge_minutes":        minute - (s.current_ev.charge_start_minute or minute),
+                        "final_soc_pct":         round(s.current_ev.current_soc * 100, 1),
+                        "energy_delivered_kwh":  round(s.current_ev.energy_delivered_kwh, 2),
+                        "status":                "Tamamlandı",
+                        "elec_deg_integral":     round(s.current_ev.elec_deg_integral, 5),
+                        "mech_stress_integral":  round(s.current_ev.mech_stress_integral, 5),
+                        "peak_bat_temp_c":       round(max(
+                            t for _, t in vehicle_temp_log.get(sid, [(0, 25.0)])
+                        ), 1),
                     })
                     s.current_ev = None
 
@@ -235,12 +250,17 @@ def build_snapshots(schedule: dict, bg_load: np.ndarray, config: ScenarioConfig)
                 "energy_delivered_kwh": round(ev.energy_delivered_kwh, 2),
                 "charge_minutes":       1440 - (ev.charge_start_minute or 1440),
                 "status":               "Yarım Kaldı",
+                "elec_deg_integral":    round(ev.elec_deg_integral, 5),
+                "mech_stress_integral": round(ev.mech_stress_integral, 5),
+                "peak_bat_temp_c":      round(max(
+                    (t for _, t in vehicle_temp_log.get(sid, [(0, 25.0)])), default=25.0
+                ), 1),
             })
     for ev in ctrl.queue:
         vehicle_events[ev.session_id]["status"] = "Şarj Edilemedi"
 
     vehicle_log = sorted(vehicle_events.values(), key=lambda x: x["arrival_minute"])
-    return snapshots, vehicle_log
+    return snapshots, vehicle_log, vehicle_temp_log
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -248,11 +268,12 @@ def build_snapshots(schedule: dict, bg_load: np.ndarray, config: ScenarioConfig)
 # ══════════════════════════════════════════════════════════════════
 
 def run_unmanaged(schedule: dict, bg_load: np.ndarray, config: ScenarioConfig) -> dict:
-    """Algoritmasız simülasyon — güç profili + araç logu döner."""
-    policy   = config.to_grid_limit_policy()
-    stations = copy.deepcopy(config.layout.stations)
-    ctrl     = UnmanagedController(stations, policy, bg_load)
+    """Algoritmasız simülasyon — güç profili + araç logu + batarya sıcaklık logu döner."""
+    policy           = config.to_grid_limit_policy()
+    stations         = copy.deepcopy(config.layout.stations)
+    ctrl             = UnmanagedController(stations, policy, bg_load)
     vehicle_events: dict = {}
+    vehicle_temp_log: dict = {}   # {session_id: [(minute, temp_c), ...]}
 
     for minute in range(1440):
         for ev in schedule.get(minute, []):
@@ -292,6 +313,15 @@ def run_unmanaged(schedule: dict, bg_load: np.ndarray, config: ScenarioConfig) -
         bg      = float(bg_load[minute])
         allocs  = {s.station_id: s.effective_max_power_kw() for s in ctrl.stations}
 
+        # Batarya sıcaklığını güncelle (25°C sabit ortam — algoritmasız trafo yok)
+        for s in ctrl.stations:
+            if s.current_ev:
+                s.current_ev.update_battery_temp(25.0, allocs[s.station_id])
+                sid = s.current_ev.session_id
+                if sid not in vehicle_temp_log:
+                    vehicle_temp_log[sid] = []
+                vehicle_temp_log[sid].append((minute, round(float(s.current_ev.battery_temp_c), 1)))
+
         for s in ctrl.stations:
             if s.current_ev:
                 s.current_ev.apply_power(allocs[s.station_id], minute)
@@ -300,11 +330,16 @@ def run_unmanaged(schedule: dict, bg_load: np.ndarray, config: ScenarioConfig) -
                     ctrl.completed.append(s.current_ev)
                     sid = s.current_ev.session_id
                     vehicle_events[sid].update({
-                        "departure_time":       _fmt(minute),
-                        "charge_minutes":       minute - (s.current_ev.charge_start_minute or minute),
-                        "final_soc_pct":        round(s.current_ev.current_soc * 100, 1),
-                        "energy_delivered_kwh": round(s.current_ev.energy_delivered_kwh, 2),
-                        "status":               "Tamamlandı",
+                        "departure_time":        _fmt(minute),
+                        "charge_minutes":        minute - (s.current_ev.charge_start_minute or minute),
+                        "final_soc_pct":         round(s.current_ev.current_soc * 100, 1),
+                        "energy_delivered_kwh":  round(s.current_ev.energy_delivered_kwh, 2),
+                        "status":                "Tamamlandı",
+                        "elec_deg_integral":     round(s.current_ev.elec_deg_integral, 5),
+                        "mech_stress_integral":  round(s.current_ev.mech_stress_integral, 5),
+                        "peak_bat_temp_c":       round(max(
+                            t for _, t in vehicle_temp_log.get(sid, [(0, 25.0)])
+                        ), 1),
                     })
                     s.current_ev = None
 
@@ -314,12 +349,18 @@ def run_unmanaged(schedule: dict, bg_load: np.ndarray, config: ScenarioConfig) -
 
     for s in ctrl.stations:
         if s.current_ev:
-            ev = s.current_ev
-            vehicle_events[ev.session_id].update({
+            ev  = s.current_ev
+            sid = ev.session_id
+            vehicle_events[sid].update({
                 "final_soc_pct":        round(ev.current_soc * 100, 1),
                 "energy_delivered_kwh": round(ev.energy_delivered_kwh, 2),
                 "charge_minutes":       1440 - (ev.charge_start_minute or 1440),
                 "status":               "Yarım Kaldı",
+                "elec_deg_integral":    round(ev.elec_deg_integral, 5),
+                "mech_stress_integral": round(ev.mech_stress_integral, 5),
+                "peak_bat_temp_c":      round(max(
+                    (t for _, t in vehicle_temp_log.get(sid, [(0, 25.0)])), default=25.0
+                ), 1),
             })
     for ev in ctrl.queue:
         vehicle_events[ev.session_id]["status"] = "Şarj Edilemedi"
@@ -335,6 +376,7 @@ def run_unmanaged(schedule: dict, bg_load: np.ndarray, config: ScenarioConfig) -
         "avg_wait":         round(float(np.mean([e.wait_time_minutes for e in ctrl.completed])) if ctrl.completed else 0.0, 1),
         "peak_power":       round(float(p.max()), 1),
         "vehicle_log":      sorted(vehicle_events.values(), key=lambda x: x["arrival_minute"]),
+        "vehicle_temp_log": vehicle_temp_log,
     }
 
 
@@ -347,11 +389,12 @@ def _fmt(m: int) -> str:
 # ══════════════════════════════════════════════════════════════════
 
 SCENARIO_MAP = {
-    "🏪 AVM (Orta)":   "avm_medium",
-    "🏢 Ofis (Büyük)": "office_large",
-    "🏨 Otel":         "hotel",
-    "🏥 Hastane":      "hospital",
-    "✈️ Havalimanı":   "airport",
+    "🏪 AVM (Orta)":         "avm_medium",
+    "🏢 Ofis (Büyük)":       "office_large",
+    "🏨 Otel":               "hotel",
+    "🏥 Hastane":            "hospital",
+    "✈️ Havalimanı":         "airport",
+    "🔥 Stres Testi (Yaz)":  "stress_test",
 }
 
 DATASET_FILE = os.path.join(os.path.dirname(__file__), "DATASET", "dataset.json")
@@ -378,9 +421,9 @@ def load_and_simulate(scenario_key: str, generate_new: bool):
         schedule = ArrivalGenerator(config.fleet).generate_arrivals(rng)
         bg_load  = BackgroundLoadGenerator.generate(np.random.default_rng(101), config.environment)
 
-    srpt_snaps, srpt_vlog = build_snapshots(copy.deepcopy(schedule), bg_load, config)
-    unmanaged              = run_unmanaged(copy.deepcopy(schedule), bg_load, config)
-    return srpt_snaps, unmanaged, srpt_vlog, unmanaged["vehicle_log"]
+    srpt_snaps, srpt_vlog, srpt_temp_log = build_snapshots(copy.deepcopy(schedule), bg_load, config)
+    unmanaged                             = run_unmanaged(copy.deepcopy(schedule), bg_load, config)
+    return srpt_snaps, unmanaged, srpt_vlog, unmanaged["vehicle_log"], srpt_temp_log
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -981,6 +1024,297 @@ def render_adaptive_all_decisions(snapshots: list, current_minute: int):
 
 
 # ══════════════════════════════════════════════════════════════════
+#  ÖMÜR TÜKETİMİ & SICAKLIK GRAFİKLERİ
+# ══════════════════════════════════════════════════════════════════
+
+def render_lifetime_chart(snapshots: list, unmanaged: dict) -> go.Figure:
+    """Trafo V(t) yaşlanma integrali + ort. BMS ömür tüketimi karşılaştırması."""
+    times     = [s["time_str"] for s in snapshots]
+    aging_log = [s["aging_rate"] for s in snapshots]  # V(t) per minute
+
+    # Trafo aging integral (kümülatif, normalize)
+    trafo_cum_algo = []
+    acc = 0.0
+    for v in aging_log:
+        acc += v / 1440.0
+        trafo_cum_algo.append(acc)
+
+    # Algoritmasız — trafo termal model yok, V(t)=1.0 varsayıyoruz (hiç kısıtlama yok)
+    # Güç profili kullanarak yaklaşık K ve V(t) hesapla
+    p_log = unmanaged["power_log"]
+    trafo_cum_unman = []
+    acc2 = 0.0
+    for p in p_log:
+        K = p / max(unmanaged.get("trafo_rated_kw", p + 1), 1.0)
+        v_approx = 2.0 ** (((K * 80.0) - 98.0) / 6.0)  # rough θ_hs approx
+        acc2 += max(0.0, v_approx) / 1440.0
+        trafo_cum_unman.append(acc2)
+
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(
+        x=times, y=trafo_cum_algo,
+        name="Trafo Yaşlanma — Adaptif",
+        line=dict(color="#f97316", width=2.5),
+        hovertemplate="%{y:.4f}<extra>Trafo Adaptif</extra>",
+    ))
+    fig.add_trace(go.Scatter(
+        x=times, y=trafo_cum_unman,
+        name="Trafo Yaşlanma — Alg.sız",
+        line=dict(color="#ef4444", width=2.5, dash="dot"),
+        hovertemplate="%{y:.4f}<extra>Trafo Alg.sız</extra>",
+    ))
+    fig.update_layout(
+        uirevision="lifetime_chart", height=240,
+        margin=dict(l=0, r=0, t=8, b=0),
+        paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="#0d1117",
+        font=dict(color="#94a3b8", size=11),
+        legend=dict(orientation="h", y=1.14, x=0, bgcolor="rgba(0,0,0,0)"),
+        xaxis=dict(showgrid=True, gridcolor="#1e293b",
+                   tickvals=[times[i] for i in range(0, 1440, 60)],
+                   ticktext=[f"{i:02d}:00" for i in range(24)], tickfont=dict(size=10)),
+        yaxis=dict(showgrid=True, gridcolor="#1e293b",
+                   title=dict(text="Kümülatif V(t) İntegrali", font=dict(size=11))),
+        hovermode="x unified",
+    )
+    return fig
+
+
+def render_bms_lifetime_chart(vehicle_log_algo: list, vehicle_log_unman: list) -> go.Figure:
+    """Araç başına BMS ömür tüketimi — elektrolit + mekanik stres."""
+    algo_map  = {v["session_id"]: v for v in vehicle_log_algo
+                 if v.get("elec_deg_integral") is not None}
+    unman_map = {v["session_id"]: v for v in vehicle_log_unman
+                 if v.get("elec_deg_integral") is not None}
+    common    = [sid for sid in algo_map if sid in unman_map]
+    if not common:
+        return go.Figure()
+
+    def total_aging(v):
+        return (v.get("elec_deg_integral", 0) or 0) + (v.get("mech_stress_integral", 0) or 0)
+
+    labels      = [sid for sid in common]
+    algo_vals   = [total_aging(algo_map[sid])  for sid in common]
+    unman_vals  = [total_aging(unman_map[sid]) for sid in common]
+
+    fig = go.Figure()
+    fig.add_trace(go.Bar(name="Adaptif",     x=labels, y=algo_vals,
+                         marker_color="#38bdf8", opacity=0.85,
+                         hovertemplate="%{y:.5f}<extra>Adaptif</extra>"))
+    fig.add_trace(go.Bar(name="Algoritmasız", x=labels, y=unman_vals,
+                         marker_color="#f97316", opacity=0.85,
+                         hovertemplate="%{y:.5f}<extra>Alg.sız</extra>"))
+    fig.update_layout(
+        barmode="group", uirevision="bms_lifetime",
+        height=280, margin=dict(l=0, r=0, t=8, b=60),
+        paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="#0d1117",
+        font=dict(color="#94a3b8", size=10),
+        legend=dict(orientation="h", y=1.12, x=0, bgcolor="rgba(0,0,0,0)"),
+        xaxis=dict(showgrid=False, tickfont=dict(size=9)),
+        yaxis=dict(showgrid=True, gridcolor="#1e293b",
+                   title=dict(text="Ömür Tüketimi (elec+mech)", font=dict(size=10))),
+    )
+    return fig
+
+
+def render_bat_temp_tab(srpt_temp_log: dict, unman_temp_log: dict):
+    """Araç batarya sıcaklıkları tabı — algoritmalı vs algoritmasız."""
+    st.markdown("### 🌡 Araç Batarya Sıcaklıkları")
+    all_ids = sorted(set(srpt_temp_log.keys()) | set(unman_temp_log.keys()))
+    if not all_ids:
+        st.info("Henüz sıcaklık verisi yok.")
+        return
+
+    selected = st.selectbox("Araç seç", all_ids, key="bat_temp_vehicle_sel")
+
+    algo_data  = srpt_temp_log.get(selected, [])
+    unman_data = unman_temp_log.get(selected, [])
+
+    fig = go.Figure()
+    if algo_data:
+        minutes, temps = zip(*algo_data)
+        times = [_fmt(m) for m in minutes]
+        fig.add_trace(go.Scatter(x=times, y=temps, name="Adaptif",
+                                 line=dict(color="#38bdf8", width=2.5),
+                                 hovertemplate="%{y:.1f}°C<extra>Adaptif</extra>"))
+    if unman_data:
+        minutes2, temps2 = zip(*unman_data)
+        times2 = [_fmt(m) for m in minutes2]
+        fig.add_trace(go.Scatter(x=times2, y=temps2, name="Algoritmasız",
+                                 line=dict(color="#f97316", width=2.5, dash="dot"),
+                                 hovertemplate="%{y:.1f}°C<extra>Alg.sız</extra>"))
+    fig.add_hline(y=40.0, line_color="#f59e0b", line_dash="dot", line_width=1.2,
+                  annotation_text="40°C BMS derating", annotation_font_color="#f59e0b")
+    fig.add_hline(y=50.0, line_color="#ef4444", line_dash="dash", line_width=1,
+                  annotation_text="50°C limit", annotation_font_color="#ef4444")
+    fig.update_layout(
+        uirevision=f"bat_temp_{selected}", height=280,
+        margin=dict(l=0, r=0, t=8, b=0),
+        paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="#0d1117",
+        font=dict(color="#94a3b8", size=11),
+        legend=dict(orientation="h", y=1.14, x=0, bgcolor="rgba(0,0,0,0)"),
+        yaxis=dict(showgrid=True, gridcolor="#1e293b",
+                   title=dict(text="Batarya Sıcaklığı (°C)", font=dict(size=11))),
+        hovermode="x unified",
+    )
+    st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False},
+                    key=f"bat_temp_chart_{selected}")
+
+
+def render_lifetime_tab(vehicle_log_algo: list, vehicle_log_unman: list):
+    """Şarj boyunca ömür tüketimi tabı — elektrolit + mekanik stres."""
+    st.markdown("### 🔋 Şarj Boyunca Ömür Tüketimi")
+
+    def _tbl(log):
+        rows = []
+        for v in log:
+            if v.get("elec_deg_integral") is None:
+                continue
+            total = (v.get("elec_deg_integral") or 0) + (v.get("mech_stress_integral") or 0)
+            rows.append({
+                "Araç ID":        v["session_id"],
+                "Model":          v["model_name"],
+                "Elektrolit Boz.": round(v.get("elec_deg_integral") or 0, 5),
+                "Mekanik Stres":  round(v.get("mech_stress_integral") or 0, 5),
+                "Toplam Ömür":    round(total, 5),
+                "Pik Sıcaklık":   v.get("peak_bat_temp_c", "-"),
+                "Şarj Süresi(dk)":v.get("charge_minutes") or "-",
+                "Son SoC(%)":     v.get("final_soc_pct") or "-",
+                "Durum":          v["status"],
+            })
+        return pd.DataFrame(rows) if rows else pd.DataFrame()
+
+    ta1, ta2, ta3 = st.tabs(["⚡ Adaptif", "🔴 Algoritmasız", "📊 Karşılaştırma"])
+
+    with ta1:
+        df1 = _tbl(vehicle_log_algo)
+        if df1.empty:
+            st.info("Veri yok.")
+        else:
+            st.dataframe(df1.sort_values("Toplam Ömür", ascending=False),
+                         use_container_width=True, hide_index=True)
+
+    with ta2:
+        df2 = _tbl(vehicle_log_unman)
+        if df2.empty:
+            st.info("Veri yok.")
+        else:
+            st.dataframe(df2.sort_values("Toplam Ömür", ascending=False),
+                         use_container_width=True, hide_index=True)
+
+    with ta3:
+        algo_map  = {v["session_id"]: v for v in vehicle_log_algo}
+        unman_map = {v["session_id"]: v for v in vehicle_log_unman}
+        diff_rows = []
+        for sid in set(algo_map) & set(unman_map):
+            a = algo_map[sid]; u = unman_map[sid]
+            at = (a.get("elec_deg_integral") or 0) + (a.get("mech_stress_integral") or 0)
+            ut = (u.get("elec_deg_integral") or 0) + (u.get("mech_stress_integral") or 0)
+            diff_rows.append({
+                "Araç ID":          sid,
+                "Model":            a["model_name"],
+                "Ömür Adaptif":     round(at, 5),
+                "Ömür Alg.sız":     round(ut, 5),
+                "Fark (Adaptif−Alg.sız)": round(at - ut, 5),
+                "Bat. Sıcaklık Adaptif": a.get("peak_bat_temp_c", "-"),
+                "Bat. Sıcaklık Alg.sız": u.get("peak_bat_temp_c", "-"),
+            })
+        if not diff_rows:
+            st.info("Karşılaştırmak için yeterli veri yok.")
+        else:
+            df3 = pd.DataFrame(diff_rows).sort_values("Fark (Adaptif−Alg.sız)")
+            def _col_diff(val):
+                if not isinstance(val, (int, float)): return ""
+                return "color: #22c55e" if val < 0 else ("color: #ef4444" if val > 0 else "")
+            st.caption("Negatif fark = Adaptif daha az ömür tüketti (iyi)")
+            st.dataframe(df3.style.map(_col_diff, subset=["Fark (Adaptif−Alg.sız)"]),
+                         use_container_width=True, hide_index=True)
+            st.plotly_chart(render_bms_lifetime_chart(vehicle_log_algo, vehicle_log_unman),
+                            use_container_width=True, config={"displayModeBar": False},
+                            key="bms_lifetime_tab")
+
+
+def render_best_worst_panel(snapshots: list, unmanaged: dict,
+                             vehicle_log_algo: list, vehicle_log_unman: list):
+    """Trafo + batarya için en iyi/en kötü sonuç kartları."""
+    st.markdown("### 🏆 En İyi / En Kötü Sonuçlar")
+
+    # ── Trafo ─────────────────────────────────────────────────────
+    theta_hs_log = [s["theta_hs"] for s in snapshots]
+    peak_ths     = max(theta_hs_log) if theta_hs_log else 0.0
+    peak_ths_min = theta_hs_log.index(peak_ths) if theta_hs_log else 0
+    aging_total  = snapshots[-1]["aging_rate"] if snapshots else 0.0  # V(t) son değer
+    aging_int    = sum(s["aging_rate"] for s in snapshots) / 1440.0
+
+    # Unmanaged power profili aşımı
+    p_arr    = np.array(unmanaged["power_log"])
+    peak_p_u = float(p_arr.max()) if len(p_arr) else 0.0
+
+    ca, cb = st.columns(2)
+    with ca:
+        st.markdown("#### 🔌 Trafo — Adaptif")
+        col1 = "#22c55e" if peak_ths < 90 else ("#f59e0b" if peak_ths < 98 else "#ef4444")
+        st.markdown(
+            f'<div style="background:#0d1b2a;border:1px solid #1e3a5f;border-radius:8px;padding:12px;">'
+            f'<b style="color:{col1}">θ_hs Pik: {peak_ths:.1f}°C</b> @ {_fmt(peak_ths_min)}<br>'
+            f'V(t) Günlük İntegral: <b>{aging_int:.4f}</b><br>'
+            f'Aşım Süresi: <b>{snapshots[-1]["overload_total_minutes"] if snapshots else 0} dk</b>'
+            f'</div>', unsafe_allow_html=True)
+    with cb:
+        st.markdown("#### 🔌 Trafo — Algoritmasız")
+        st.markdown(
+            f'<div style="background:#1a0d0d;border:1px solid #7f1d1d;border-radius:8px;padding:12px;">'
+            f'<b style="color:#ef4444">Pik Güç: {peak_p_u:.0f} kW</b><br>'
+            f'Aşım Süresi: <b>{unmanaged["overload_minutes"]} dk</b><br>'
+            f'<span style="color:#94a3b8">Termal model yok — V(t) hesaplanamaz</span>'
+            f'</div>', unsafe_allow_html=True)
+
+    st.markdown("---")
+
+    # ── Batarya — En kötü/en iyi ──────────────────────────────────
+    def _bat_stats(log):
+        valid = [v for v in log if v.get("peak_bat_temp_c") is not None
+                 and v.get("elec_deg_integral") is not None]
+        if not valid:
+            return None, None, None, None
+        hottest  = max(valid, key=lambda v: v["peak_bat_temp_c"])
+        coolest  = min(valid, key=lambda v: v["peak_bat_temp_c"])
+        most_deg = max(valid, key=lambda v: (v.get("elec_deg_integral") or 0)
+                                           + (v.get("mech_stress_integral") or 0))
+        least_deg = min(valid, key=lambda v: (v.get("elec_deg_integral") or 0)
+                                           + (v.get("mech_stress_integral") or 0))
+        return hottest, coolest, most_deg, least_deg
+
+    hot_a, cool_a, mdeg_a, ldeg_a = _bat_stats(vehicle_log_algo)
+    hot_u, cool_u, mdeg_u, ldeg_u = _bat_stats(vehicle_log_unman)
+
+    cc1, cc2 = st.columns(2)
+    with cc1:
+        st.markdown("#### 🔋 Batarya — Adaptif")
+        if hot_a:
+            total_a = (mdeg_a.get("elec_deg_integral") or 0) + (mdeg_a.get("mech_stress_integral") or 0)
+            total_la = (ldeg_a.get("elec_deg_integral") or 0) + (ldeg_a.get("mech_stress_integral") or 0)
+            st.markdown(
+                f'<div style="background:#0d1b2a;border:1px solid #1e3a5f;border-radius:8px;padding:12px;font-size:0.83em;">'
+                f'🌡 <b>En sıcak:</b> {hot_a["session_id"]} ({hot_a["model_name"]}) — <span style="color:#f97316">{hot_a["peak_bat_temp_c"]:.1f}°C</span><br>'
+                f'❄️ <b>En serin:</b> {cool_a["session_id"]} ({cool_a["model_name"]}) — <span style="color:#22c55e">{cool_a["peak_bat_temp_c"]:.1f}°C</span><br>'
+                f'⚠️ <b>En fazla ömür:</b> {mdeg_a["session_id"]} — <span style="color:#ef4444">{total_a:.5f}</span><br>'
+                f'✅ <b>En az ömür:</b> {ldeg_a["session_id"]} — <span style="color:#22c55e">{total_la:.5f}</span>'
+                f'</div>', unsafe_allow_html=True)
+    with cc2:
+        st.markdown("#### 🔋 Batarya — Algoritmasız")
+        if hot_u:
+            total_u = (mdeg_u.get("elec_deg_integral") or 0) + (mdeg_u.get("mech_stress_integral") or 0)
+            total_lu = (ldeg_u.get("elec_deg_integral") or 0) + (ldeg_u.get("mech_stress_integral") or 0)
+            st.markdown(
+                f'<div style="background:#1a0d0d;border:1px solid #7f1d1d;border-radius:8px;padding:12px;font-size:0.83em;">'
+                f'🌡 <b>En sıcak:</b> {hot_u["session_id"]} ({hot_u["model_name"]}) — <span style="color:#f97316">{hot_u["peak_bat_temp_c"]:.1f}°C</span><br>'
+                f'❄️ <b>En serin:</b> {cool_u["session_id"]} ({cool_u["model_name"]}) — <span style="color:#22c55e">{cool_u["peak_bat_temp_c"]:.1f}°C</span><br>'
+                f'⚠️ <b>En fazla ömür:</b> {mdeg_u["session_id"]} — <span style="color:#ef4444">{total_u:.5f}</span><br>'
+                f'✅ <b>En az ömür:</b> {ldeg_u["session_id"]} — <span style="color:#22c55e">{total_lu:.5f}</span>'
+                f'</div>', unsafe_allow_html=True)
+
+
+# ══════════════════════════════════════════════════════════════════
 #  ANA UYGULAMA
 # ══════════════════════════════════════════════════════════════════
 
@@ -999,6 +1333,7 @@ def main():
     for k, v in [
         ("snapshots", None), ("unmanaged", None),
         ("vehicle_log", None), ("unmanaged_vlog", None),
+        ("srpt_temp_log", None),
         ("frame", 0), ("running", False),
         ("replay_start", 0), ("replay_end", 1439),
         ("last_frame_time", None),
@@ -1018,11 +1353,12 @@ def main():
         if st.button("🔄 Simülasyonu Hazırla", use_container_width=True, type="primary"):
             with st.spinner("Simülasyon çalışıyor (Adaptif + Algoritmasız)..."):
                 try:
-                    snaps, unman, vlog, uvlog = load_and_simulate(scenario_key, generate_new)
+                    snaps, unman, vlog, uvlog, stl = load_and_simulate(scenario_key, generate_new)
                     st.session_state.snapshots      = snaps
                     st.session_state.unmanaged      = unman
                     st.session_state.vehicle_log    = vlog
                     st.session_state.unmanaged_vlog = uvlog
+                    st.session_state.srpt_temp_log  = stl
                     st.session_state.frame   = 0
                     st.session_state.running = False
                 except Exception as e:
@@ -1093,11 +1429,13 @@ def main():
         )
         return
 
-    snap     = st.session_state.snapshots[st.session_state.frame]
-    unman    = st.session_state.unmanaged
-    vlog     = st.session_state.vehicle_log
-    uvlog    = st.session_state.unmanaged_vlog
-    last_snp = st.session_state.snapshots[-1]
+    snap         = st.session_state.snapshots[st.session_state.frame]
+    unman        = st.session_state.unmanaged
+    vlog         = st.session_state.vehicle_log
+    uvlog        = st.session_state.unmanaged_vlog
+    srpt_temp_log = st.session_state.srpt_temp_log or {}
+    unman_temp_log = unman.get("vehicle_temp_log", {})
+    last_snp     = st.session_state.snapshots[-1]
 
     # ── Başlık ───────────────────────────────────────────────────
     if snap["is_peak"]:
@@ -1198,7 +1536,7 @@ def main():
     with col_chart:
         st.markdown("### 📈 Güç Profili — 24 Saat")
         fig = render_power_chart(st.session_state.snapshots, unman, snap["minute"])
-        st.plotly_chart(fig, use_container_width=True, config={
+        st.plotly_chart(fig, use_container_width=True, key="power_chart", config={
             "scrollZoom": True,
             "displayModeBar": True,
             "modeBarButtonsToRemove": ["lasso2d", "select2d", "autoScale2d"],
@@ -1213,13 +1551,13 @@ def main():
     with tc1:
         st.markdown("**Trafo Hot-spot & Yaşlanma**")
         fig_th = render_thermal_chart(st.session_state.snapshots, snap["minute"])
-        st.plotly_chart(fig_th, use_container_width=True, config={
+        st.plotly_chart(fig_th, use_container_width=True, key="thermal_hs_chart", config={
             "scrollZoom": True, "displayModeBar": False,
         })
     with tc2:
         st.markdown("**Dinamik Limit & Batarya Sıcaklığı**")
         fig_bt = render_battery_temp_chart(st.session_state.snapshots, snap["minute"])
-        st.plotly_chart(fig_bt, use_container_width=True, config={
+        st.plotly_chart(fig_bt, use_container_width=True, key="thermal_bat_chart", config={
             "scrollZoom": True, "displayModeBar": False,
         })
 
@@ -1240,10 +1578,46 @@ def main():
     elif snap["minute"] > 0:
         st.markdown("<div style='color:#22c55e;font-size:0.9em;padding:4px 0'>✅ Kuyruk boş</div>", unsafe_allow_html=True)
 
-    # ── Araç logları + SRPT geçmişi ───────────────────────────────
-    if vlog and uvlog:
-        render_vehicle_log(vlog, uvlog, snap, snap["minute"])
-    render_adaptive_all_decisions(st.session_state.snapshots, snap["minute"])
+    # ── Ömür Tüketimi grafiği ─────────────────────────────────────
+    st.divider()
+    st.markdown("### 📉 Trafo & BMS Ömür Tüketimi — Algoritmalı vs Algoritmasız")
+    lc1, lc2 = st.columns(2)
+    with lc1:
+        st.markdown("**Trafo V(t) Yaşlanma İntegrali**")
+        st.plotly_chart(render_lifetime_chart(st.session_state.snapshots, unman),
+                        use_container_width=True, key="trafo_lifetime_chart",
+                        config={"displayModeBar": False})
+    with lc2:
+        st.markdown("**BMS Ömür Tüketimi — Araç Başına**")
+        st.plotly_chart(render_bms_lifetime_chart(vlog, uvlog),
+                        use_container_width=True, key="bms_lifetime_main",
+                        config={"displayModeBar": False})
+
+    # ── En iyi / en kötü panel ───────────────────────────────────
+    st.divider()
+    render_best_worst_panel(st.session_state.snapshots, unman, vlog, uvlog)
+
+    # ── Detay tabları ─────────────────────────────────────────────
+    st.divider()
+    detail_tab1, detail_tab2, detail_tab3, detail_tab4 = st.tabs([
+        "📋 Araç Logları",
+        "🌡 Batarya Sıcaklıkları",
+        "🔋 Şarj Boyunca Ömür",
+        "📜 Adaptif Karar Geçmişi",
+    ])
+
+    with detail_tab1:
+        if vlog and uvlog:
+            render_vehicle_log(vlog, uvlog, snap, snap["minute"])
+
+    with detail_tab2:
+        render_bat_temp_tab(srpt_temp_log, unman_temp_log)
+
+    with detail_tab3:
+        render_lifetime_tab(vlog, uvlog)
+
+    with detail_tab4:
+        render_adaptive_all_decisions(st.session_state.snapshots, snap["minute"])
 
     # ── Animasyon ─────────────────────────────────────────────────
     if st.session_state.running:

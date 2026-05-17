@@ -473,6 +473,10 @@ class AdaptiveSoCController:
         self.w_urgency                = kwargs.get('w_urgency', 1.0)
         self.w_aging                  = kwargs.get('w_aging', 0.5)
         self.aging_throttle_threshold = kwargs.get('aging_throttle_threshold', 3.0)
+        # Dielektrik stres azaltma: ani yük geçişi sınırı (kW/dk)
+        # Büyük Δ güç → akım darbesi → trafoda dielektrik stres
+        self.max_ramp_kw_per_min      = kwargs.get('max_ramp_kw_per_min', 30.0)
+        self._prev_ev_load: float     = 0.0  # geçen dakika EV yükü (ramp kontrol için)
 
         # Termal mod aktif mi? (policy tipi ile belirlenir)
         self._thermal_active = (
@@ -626,6 +630,16 @@ class AdaptiveSoCController:
                             new_eligible.append(s)
                     eligible = new_eligible
 
+        # ── Ramp rate limiter — dielektrik stres azaltma ─────────────────────
+        # Ani EV yük artışı trafoya dielektrik stres uygular (akım darbesi).
+        # |ΔP_EV| > max_ramp_kw_per_min ise allocs orantılı ölçeklenir.
+        new_ev_load = sum(allocs.values())
+        delta_ev    = new_ev_load - self._prev_ev_load
+        if delta_ev > self.max_ramp_kw_per_min and new_ev_load > 0.01:
+            scale = (self._prev_ev_load + self.max_ramp_kw_per_min) / new_ev_load
+            allocs = {sid: v * scale for sid, v in allocs.items()}
+
+        self._prev_ev_load = sum(allocs.values())
         return allocs
 
     def step(self, minute: int):

@@ -289,3 +289,69 @@ class Scenarios:
                 ChargingStation("S5", StationType.STANDARD, 120),
             ]),
         )
+
+    @staticmethod
+    def stress_test() -> ScenarioConfig:
+        """Stres testi — yaz sıcağı + yoğun EV + küçük trafo.
+
+        Amaç: Sıcaklık etkisini, termal baskıyı ve batarya yaşlanmasını
+        gözlemlemek için maksimum zorlayıcı senaryo.
+          - 60 araç / gün (normal AVM'nin ~1.7 katı)
+          - ambient_temp_max = 40°C (yaz öğlesi)
+          - Trafo küçük tutulmuş (800 kVA) → yük faktörü yüksek
+          - Araçlar düşük SoC'la gelir (0.05–0.25) → uzun şarj süresi
+          - target_soc = 0.90 → daha fazla enerji talebi
+          - Ani geliş dalgaları → ramp stress
+        """
+        from models import (
+            ScenarioConfig, EnvironmentProfile, GridConfig, FleetProfile,
+            ArrivalPattern, ChargingStation, StationType, StationLayout, EVModel
+        )
+        return ScenarioConfig(
+            name="Stres_Testi",
+            environment=EnvironmentProfile(
+                name="Stres_Testi",
+                base_min_kw=200.0, base_max_kw=550.0,
+                operation_start_hour=6.0, operation_duration_hours=16.0,
+                morning_peak_hour=9.0,  morning_peak_kw=120.0, morning_peak_width=0.8,
+                evening_peak_hour=18.0, evening_peak_kw=160.0, evening_peak_width=1.0,
+                noise_kw=30.0, load_min_kw=180.0, load_max_kw=850.0,
+                ambient_temp_min=26.0,
+                ambient_temp_max=40.0,
+                ambient_temp_peak_hour=14.0,
+            ),
+            grid=GridConfig(
+                trafo_kva=800,
+                evening_peak_kw=500.0,
+                peak_start_hour=17.0,
+                peak_end_hour=22.0,
+                delta_theta_oil_rated=55.0,
+                delta_theta_hs_rated=25.0,
+                tau_oil_min=120.0,
+            ),
+            fleet=FleetProfile(
+                daily_ev_count=60,
+                initial_soc_min=0.05,
+                initial_soc_max=0.25,
+                target_soc=0.90,
+                ev_models=[
+                    EVModel("Tesla Model Y", 75.0, 250.0, 0.30),
+                    EVModel("Porsche Taycan", 93.4, 270.0, 0.25),
+                    EVModel("Togg T10X", 88.5, 150.0, 0.20),
+                    EVModel("BYD Atto 3", 60.4, 88.0, 0.15),
+                    EVModel("MG4 Standard", 51.0, 117.0, 0.10),
+                ],
+                arrival_patterns=[
+                    ArrivalPattern(mean_hour=8.0,  std_minutes=20, fraction=0.30),
+                    ArrivalPattern(mean_hour=12.5, std_minutes=25, fraction=0.20),
+                    ArrivalPattern(mean_hour=17.5, std_minutes=20, fraction=0.50),
+                ],
+            ),
+            layout=StationLayout([
+                ChargingStation("S1", StationType.ULTRA_FAST, 200),
+                ChargingStation("S2", StationType.ULTRA_FAST, 200),
+                ChargingStation("S3", StationType.FAST, 180),
+                ChargingStation("S4", StationType.FAST, 180),
+                ChargingStation("S5", StationType.STANDARD, 120),
+            ]),
+        )

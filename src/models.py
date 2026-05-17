@@ -83,6 +83,8 @@ class DynamicGridLimitPolicy(GridLimitPolicy):
         self.theta_hs_log: List[float] = []
         self.aging_rate_log: List[float] = []
         self.dynamic_limit_log: List[float] = []
+        self.dielectric_stress_log: List[float] = []  # |ΔP/S_rated| ani yük geçiş stresi
+        self._prev_total_load: float = 0.0
 
     def _ambient_temp(self, minute: int) -> float:
         """Sentetik günlük ortam sıcaklığı profili (sinüzoidal)."""
@@ -114,6 +116,12 @@ class DynamicGridLimitPolicy(GridLimitPolicy):
         # IEC 60076-7 yaşlanma hızı — non-thermally upgraded Kraft paper
         self.aging_rate = 2.0 ** ((self.theta_hs - 98.0) / 6.0)
         self.aging_integral += self.aging_rate / 1440.0  # günlük normalize
+
+        # Dielektrik stres — ani yük geçişi (|ΔP / S_rated|)
+        # Hızlı akım değişimleri → elektromanyetik kuvvet + geçici gerilim dalgalanması
+        dielectric_stress = abs(total_load_kw - self._prev_total_load) / max(self._s_rated, 1.0)
+        self.dielectric_stress_log.append(dielectric_stress)
+        self._prev_total_load = total_load_kw
 
         # Log
         self.theta_oil_log.append(self.theta_oil)
@@ -223,6 +231,9 @@ class EV:
     # Batarya termal parametreleri
     battery_temp_c: float = 25.0      # başlangıç batarya sıcaklığı (°C)
     tau_battery_min: float = 30.0     # termal zaman sabiti (dk) — tipik hava soğutmalı paket
+    # Kümülatif yaşlanma integralleri (şarj süresi boyunca izlenir)
+    elec_deg_integral: float = 0.0    # elektrolit bozulma kümülatifi (SoC+sıcaklık bazlı)
+    mech_stress_integral: float = 0.0 # mekanik stres kümülatifi (C-rate bazlı)
 
     def __post_init__(self):
         self.current_soc = self.initial_soc
@@ -302,22 +313,50 @@ class EV:
         # Birinci dereceden ODE (Euler)
         self.battery_temp_c += (dt / self.tau_battery_min) * (target_temp - self.battery_temp_c)
 
+    def _arrhenius(self) -> float:
+        """Arrhenius sıcaklık faktörü — NMC aktivasyon enerjisi Ea/R = 6976 K."""
+        T_k = self.battery_temp_c + 273.15
+        return math.exp(6976.0 * (1.0 / 298.15 - 1.0 / T_k))
+
+    def elec_deg_rate(self) -> float:
+        """Elektrolit bozulma hızı — SoC bazlı takvim yaşlanması.
+
+        Yüksek SoC'da elektrolit oksidasyonu hızlanır (anodik çözünme).
+        Kaynak: Severson et al., Nature Energy 4 (2019) 383-391.
+                Schmalstieg et al., J. Power Sources 257 (2014) 325.
+        """
+        # SoC > %50'den itibaren üstel artış; zirve %100'de
+        soc_factor = math.exp(3.0 * max(0.0, self.current_soc - 0.50))
+        return soc_factor * self._arrhenius()
+
+    def mech_stress_rate(self, c_rate: float) -> float:
+        """Mekanik stres hızı — C-rate bazlı hacim değişimi (lityum intercalasyon).
+
+        Hızlı şarj → yüksek akım yoğunluğu → katman yapısında gerilim.
+        Kaynak: Wang et al., J. Power Sources 196 (2011) 3942.
+        """
+        return c_rate ** 2 * self._arrhenius()
+
     def marginal_aging_cost(self, power_kw: float) -> float:
-        """Marjinal batarya yaşlanma maliyeti — SoC stresi × C-rate² × Arrhenius sıcaklık faktörü.
+        """Birleşik marjinal batarya yaşlanma maliyeti.
+
+        Üç bileşen:
+          1) Elektrolit bozulması (SoC + sıcaklık bazlı takvim yaşlanması)
+          2) Mekanik stres (C-rate bazlı döngüsel yaşlanma, hacim genleşmesi)
+          3) Yüksek SoC + yüksek C-rate çakışma (SEI büyümesi hızlanması)
 
         Kaynak:
           - Wang et al., J. Power Sources 196 (2011) 3942 — NMC cycle aging
           - Schmalstieg et al., J. Power Sources 257 (2014) 325 — NMC calendar+cycle
-          Arrhenius: Ea/R ≈ 6976 K (aktivasyon enerjisi NMC için)
-          Referans sıcaklık: 25°C (298.15 K)
+          - Severson et al., Nature Energy 4 (2019) 383 — SoC-dependent calendar
+          Arrhenius: Ea/R ≈ 6976 K (aktivasyon enerjisi NMC için), Tref=25°C
         """
         c_rate = power_kw / max(self.battery_capacity_kwh, 0.1)
-        soc_stress = math.exp(3.5 * max(0.0, self.current_soc - 0.70))
-        # Arrhenius sıcaklık faktörü
-        T_k = self.battery_temp_c + 273.15
-        T_ref = 298.15  # 25°C
-        temp_factor = math.exp(6976.0 * (1.0 / T_ref - 1.0 / T_k))
-        return soc_stress * c_rate ** 2 * temp_factor
+        k_elec = self.elec_deg_rate()                     # takvim bileşeni
+        k_mech = self.mech_stress_rate(c_rate)            # döngüsel bileşen
+        # SEI büyümesi: yüksek SoC + yüksek C-rate çakışması
+        sei_boost = math.exp(2.0 * max(0.0, self.current_soc - 0.70)) * c_rate
+        return 0.50 * k_elec + 0.35 * k_mech + 0.15 * sei_boost * self._arrhenius()
 
     def apply_power(self, power_kw: float, minute: int) -> float:
         if self.current_soc >= self.target_soc:
@@ -332,6 +371,10 @@ class EV:
         self.energy_delivered_kwh += energy_to_absorb
         if effective_power > 0.0:
             self.charge_minutes += 1
+            # Kümülatif yaşlanma integralleri (dakika bazlı)
+            c_rate = effective_power / max(self.battery_capacity_kwh, 0.1)
+            self.elec_deg_integral  += self.elec_deg_rate()          / 60.0
+            self.mech_stress_integral += self.mech_stress_rate(c_rate) / 60.0
         return energy_to_absorb
 
     @property

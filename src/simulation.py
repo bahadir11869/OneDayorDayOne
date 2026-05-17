@@ -170,6 +170,7 @@ if __name__ == "__main__":
         "hotel":        Scenarios.hotel,
         "hospital":     Scenarios.hospital,
         "airport":      Scenarios.airport,
+        "stress_test":  Scenarios.stress_test,
     }
     parser = argparse.ArgumentParser(description="EV Yük Dengeleme")
     parser.add_argument("--generate-new", action="store_true")
