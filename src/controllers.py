@@ -478,6 +478,11 @@ class AdaptiveSoCController:
         # Büyük Δ güç → akım darbesi → trafoda dielektrik stres
         self.max_ramp_kw_per_min      = kwargs.get('max_ramp_kw_per_min', 30.0)
         self._prev_ev_load: float     = 0.0  # geçen dakika EV yükü (ramp kontrol için)
+        # Kullanıcı tarafından seçilebilen optimizasyon hedefleri
+        self.use_keep_alive  = kwargs.get('use_keep_alive', True)
+        self.use_soc_taper   = kwargs.get('use_soc_taper', True)
+        self.algo_enabled    = kwargs.get('algo_enabled', True)
+        self.limit_bias_kw   = kwargs.get('limit_bias_kw', 0.0)
 
         # Termal mod aktif mi? (policy tipi ile belirlenir)
         self._thermal_active = (
@@ -496,7 +501,7 @@ class AdaptiveSoCController:
         """
         # ══════════ TERMAL MOD ═══════════════════════════════════════════════
         if self._thermal_active:
-            return self.policy.current_limit_kw(minute, self.bg_load[minute])
+            return max(0.0, self.policy.current_limit_kw(minute, self.bg_load[minute]) + self.limit_bias_kw)
 
         # ══════════ STATİK MOD (mevcut davranış — bit-identical) ═════════════
         tod        = minute % 1440
@@ -504,7 +509,7 @@ class AdaptiveSoCController:
 
         # Katman 1: statik peak penceresi
         if self.policy.peak_start_min <= tod < self.policy.peak_end_min:
-            return self.policy.evening_peak_kw
+            return max(0.0, self.policy.evening_peak_kw + self.limit_bias_kw)
 
         # Katman 2: soft ramp
         if ramp_start <= tod < self.policy.peak_start_min:
@@ -528,9 +533,9 @@ class AdaptiveSoCController:
                 dyn_limit = self.policy.trafo_max_kw - t * (
                     self.policy.trafo_max_kw - self.policy.evening_peak_kw
                 )
-            return min(static_limit, dyn_limit)
+            return max(0.0, min(static_limit, dyn_limit) + self.limit_bias_kw)
 
-        return static_limit
+        return max(0.0, static_limit + self.limit_bias_kw)
 
     def soc_tapered_power(self, ev, station_max_kw: float) -> float:
         """C-rate limitli, SoC'a göre kademeli güç tavanı (CC-CV eğrisi).
@@ -542,6 +547,8 @@ class AdaptiveSoCController:
           0.80 ≤ SoC ≤ 1.00    → 0.20 → 0.05  (CV bölgesi, gradual)
         """
         c_rate_limit = ev.battery_capacity_kwh * self.MAX_C_RATE
+        if not self.use_soc_taper:
+            return min(station_max_kw, c_rate_limit, ev.max_dc_power_kw)
         soc = ev.current_soc
         if soc < 0.50:
             taper = 1.0
@@ -568,13 +575,17 @@ class AdaptiveSoCController:
         budget = max(0.0, limit - future_base - safety)
         caps   = {s.station_id: self.soc_tapered_power(s.current_ev, s.max_power_kw) for s in active}
 
+        # Algoritma devre dışı → tüm araçlara anlık max güç (yönetimsiz davranış)
+        if not self.algo_enabled:
+            return {s.station_id: caps.get(s.station_id, 0.0) for s in self.stations}
+
         # ── Keep-alive: her aktif araca minimum güç garantisi — 0 kW yasağı ──
-        # Bütçe çok sıkışık olsa bile araç tamamen açta bırakılmaz.
-        for s in active:
-            give = min(self.KEEP_ALIVE_KW, caps[s.station_id], budget)
-            if give > 0.01:
-                allocs[s.station_id] = give
-                budget -= give
+        if self.use_keep_alive:
+            for s in active:
+                give = min(self.KEEP_ALIVE_KW, caps[s.station_id], budget)
+                if give > 0.01:
+                    allocs[s.station_id] = give
+                    budget -= give
 
         def score(s):
             ev              = s.current_ev
@@ -664,10 +675,7 @@ class AdaptiveSoCController:
     def step(self, minute: int):
         for s in self.stations:
             if not s.current_ev and self.queue:
-                # Öncelik: uzun bekleyen + az enerjisi kalan → en yüksek skor = en acil
-                self.queue.sort(
-                    key=lambda ev: -(minute - ev.arrival_minute + 1) / max(ev.energy_needed_kwh, 0.01)
-                )
+                # FIFO: istasyon ataması geliş sırasına göre (geleceği bilemeyiz)
                 s.current_ev = self.queue.pop(0)
                 s.current_ev.charge_start_minute = minute
 

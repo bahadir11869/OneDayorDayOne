@@ -27,18 +27,33 @@ from models import EV, ScenarioConfig, DynamicGridLimitPolicy
 #  SRPT — 1440 detaylı snapshot + araç logu
 # ══════════════════════════════════════════════════════════════════
 
-def build_snapshots(schedule: dict, bg_load: np.ndarray, config: ScenarioConfig):
+def build_snapshots(schedule: dict, bg_load: np.ndarray, config: ScenarioConfig, opt_config: dict = None):
     """AdaptiveSoC (termal mod) simülasyonu.
     Döner: (snapshots, vehicle_log, vehicle_temp_log)
       vehicle_temp_log: {session_id: [(minute, temp_c), ...]}
     """
-    policy   = config.to_grid_limit_policy(use_dynamic=True, theta_hs_target=98.0)
+    if opt_config is None:
+        opt_config = {}
+    opt_battery  = opt_config.get('battery_health', True)
+    opt_trafo    = opt_config.get('trafo_health', True)
+    reserve_kw   = float(opt_config.get('reserve_kw', 0.0))
+    opt_no_long  = opt_config.get('no_long_charge', True)
+    algo_enabled = opt_config.get('algo_enabled', True)
+
+    policy   = config.to_grid_limit_policy(use_dynamic=opt_trafo, theta_hs_target=98.0)
     stations = copy.deepcopy(config.layout.stations)
     ctrl     = AdaptiveSoCController(
         stations, policy, bg_load,
-        use_dynamic_grid_limit=True, use_aging_cost=True,
-        w_urgency=1.0, w_aging=0.25, aging_throttle_threshold=3.0,
-        max_ramp_kw_per_min=30.0,
+        use_dynamic_grid_limit=opt_trafo,
+        use_aging_cost=opt_battery,
+        w_urgency=1.5 if opt_no_long else 1.0,
+        w_aging=0.5   if opt_battery else 0.1,
+        aging_throttle_threshold=2.0 if opt_battery else 999.0,
+        max_ramp_kw_per_min=30.0 if opt_trafo else float('inf'),
+        use_keep_alive=opt_no_long,
+        use_soc_taper=opt_battery,
+        algo_enabled=algo_enabled,
+        limit_bias_kw=-reserve_kw,
     )
     is_thermal       = isinstance(policy, DynamicGridLimitPolicy)
     snapshots        = []
@@ -71,10 +86,7 @@ def build_snapshots(schedule: dict, bg_load: np.ndarray, config: ScenarioConfig)
 
         for s in ctrl.stations:
             if not s.current_ev and ctrl.queue:
-                # Öncelik: uzun bekleyen + az enerjisi kalan → en yüksek skor = en acil
-                ctrl.queue.sort(
-                    key=lambda ev: -(minute - ev.arrival_minute + 1) / max(ev.energy_needed_kwh, 0.01)
-                )
+                # FIFO: istasyon ataması geliş sırasına göre (geleceği bilemeyiz)
                 s.current_ev = ctrl.queue.pop(0)
                 s.current_ev.charge_start_minute = minute
                 sid = s.current_ev.session_id
@@ -423,7 +435,7 @@ SCENARIO_MAP = {
 DATASET_FILE = os.path.join(os.path.dirname(__file__), "DATASET", "dataset.json")
 
 
-def load_and_simulate(scenario_key: str, generate_new: bool, ev_count_override: int = 0):
+def load_and_simulate(scenario_key: str, generate_new: bool, ev_count_override: int = 0, opt_config: dict = None):
     scenario_fn = getattr(Scenarios, scenario_key)
     config: ScenarioConfig = scenario_fn()
 
@@ -454,7 +466,7 @@ def load_and_simulate(scenario_key: str, generate_new: bool, ev_count_override: 
             ))
         bg_load = np.array(data["background_load_profile"])
 
-    srpt_snaps, srpt_vlog, srpt_temp_log = build_snapshots(copy.deepcopy(schedule), bg_load, config)
+    srpt_snaps, srpt_vlog, srpt_temp_log = build_snapshots(copy.deepcopy(schedule), bg_load, config, opt_config=opt_config)
     unmanaged                             = run_unmanaged(copy.deepcopy(schedule), bg_load, config)
     return srpt_snaps, unmanaged, srpt_vlog, unmanaged["vehicle_log"], srpt_temp_log
 
@@ -1469,12 +1481,38 @@ def main():
             help="Senaryo varsayılanını değiştirmek için düzenleyin — otomatik olarak yeni dataset üretilir.",
         )
 
+        st.divider()
+        st.markdown("**⚙️ Optimizasyon Hedefleri**")
+        opt_battery = st.checkbox("🔋 Araç batarya sağlığı", value=True, key="opt_bat",
+                                   help="CC-CV taper aktif, yaşlanma maliyeti skoru ve ağırlığı artar, aging throttle sıkılaşır.")
+        opt_trafo   = st.checkbox("🔌 Trafo sağlığı", value=True, key="opt_trf",
+                                   help="IEC termal model (θ_hs ODE) + ramp rate limiter aktif.")
+        opt_reserve = st.checkbox("📦 Rezerv yük bırakılsın", value=True, key="opt_rsv",
+                                   help="Trafo limitine negatif ofset uygulanır — daha fazla güvenlik payı.")
+        reserve_kw  = st.slider("Rezerv payı (kW)", 0, 200, 100, step=10, key="opt_rsv_kw",
+                                 disabled=not opt_reserve,
+                                 help="0 = ofset yok. 200 = limit 200 kW daha düşük tutulur.")
+        opt_no_long = st.checkbox("⏱ Şarj süresi uzamasın", value=True, key="opt_spd",
+                                   help="Keep-alive (min 5 kW, 0 kW yasağı) + aciliyet ağırlığı artar.")
+
+        st.divider()
+        algo_enabled = st.toggle("⚡ Algoritma aktif", value=True, key="algo_on",
+                                  help="Kapalıysa tüm araçlara anlık maksimum güç verilir (yönetimsiz davranış).")
+
         if st.button("🔄 Simülasyonu Hazırla", use_container_width=True, type="primary"):
             with st.spinner("Simülasyon çalışıyor (Adaptif + Algoritmasız)..."):
                 try:
                     _ev_override = int(ev_count_input) if int(ev_count_input) != default_count else 0
+                    _opt_config  = {
+                        'battery_health': opt_battery,
+                        'trafo_health':   opt_trafo,
+                        'reserve_kw':     float(reserve_kw) if opt_reserve else 0.0,
+                        'no_long_charge': opt_no_long,
+                        'algo_enabled':   algo_enabled,
+                    }
                     snaps, unman, vlog, uvlog, stl = load_and_simulate(
-                        scenario_key, generate_new, ev_count_override=_ev_override
+                        scenario_key, generate_new, ev_count_override=_ev_override,
+                        opt_config=_opt_config
                     )
                     st.session_state.snapshots      = snaps
                     st.session_state.unmanaged      = unman
