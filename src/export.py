@@ -8,7 +8,7 @@ import pandas as pd
 import matplotlib.pyplot as plt
 from matplotlib.gridspec import GridSpec
 
-from models import SimulationResult, MetricsSummary, VehicleSession
+from models import SimulationResult, MetricsSummary, VehicleSession, DynamicGridLimitPolicy
 
 
 def build_station_matrix(timeline_log):
@@ -102,11 +102,27 @@ class ExecutiveDashboard:
     def create(r_u: SimulationResult, r_m: SimulationResult,
                ctrl_label: str = "Kontrol Sonrası",
                filename: str = "executive_dashboard_v4.png",
-               bg_load: Optional[np.ndarray] = None):
-        fig = plt.figure(figsize=(16, 30))
-        fig.suptitle(f"EV Şarj Yük Dengeleme — {ctrl_label}", fontsize=18, fontweight="bold", y=0.995)
-        gs = GridSpec(5, 2, figure=fig, hspace=0.4, wspace=0.25)
-        axs = [fig.add_subplot(gs[i]) for i in [(0,0), (0,1), (1,0), (1,1), (2,0), (2,1), (3, slice(None)), (4, slice(None))]]
+               bg_load: Optional[np.ndarray] = None,
+               thermal_ctrl=None):
+        """
+        thermal_ctrl: AdaptiveSoCController instance (termal paneller için).
+        Verilmezse Panel 9/10/11 boş kalır.
+        """
+        has_thermal = (
+            thermal_ctrl is not None and
+            hasattr(thermal_ctrl, 'policy') and
+            isinstance(thermal_ctrl.policy, DynamicGridLimitPolicy)
+        )
+
+        n_rows = 7 if has_thermal else 5
+        fig = plt.figure(figsize=(16, n_rows * 6))
+        fig.suptitle(f"EV Şarj Yük Dengeleme — {ctrl_label}", fontsize=18, fontweight="bold", y=0.998)
+        gs = GridSpec(n_rows, 2, figure=fig, hspace=0.45, wspace=0.28)
+
+        axs = [fig.add_subplot(gs[i]) for i in [
+            (0,0), (0,1), (1,0), (1,1), (2,0), (2,1),
+            (3, slice(None)), (4, slice(None))
+        ]]
 
         mods = sorted(list({s.model_name.split()[0] for s in r_u.vehicle_sessions}))
         x = np.arange(len(mods)); wd = 0.35
@@ -187,6 +203,82 @@ class ExecutiveDashboard:
             axs[7].text(0.5, 0.5, "Baz yük verisi mevcut değil",
                         ha="center", va="center", transform=axs[7].transAxes, fontsize=12)
 
+        # ── Panel 9 & 10: Termal paneller (sadece termal mod aktifse) ──────────
+        if has_thermal:
+            pol = thermal_ctrl.policy
+            hrs = np.arange(1440) / 60.0
+
+            # Panel 9: Trafo hot-spot + yağ sıcaklığı (sol eksen)
+            #          Trafo yaşlanma hızı V(t) (sağ eksen)
+            ax9 = fig.add_subplot(gs[5, slice(None)])
+            if pol.theta_hs_log:
+                n = len(pol.theta_hs_log)
+                ax9.plot(hrs[:n], pol.theta_hs_log,
+                         lw=2.2, color="#e74c3c", label="Hot-spot θ_hs (°C)")
+                ax9.plot(hrs[:n], pol.theta_oil_log,
+                         lw=2.0, color="#e67e22", ls="--", label="Yağ θ_oil (°C)")
+                ax9.axhline(pol.theta_hs_target, color="red", ls=":", lw=1.5,
+                            label=f"θ_hs hedef ({pol.theta_hs_target:.0f}°C)")
+                ax9.axhline(98.0, color="gray", ls=":", lw=1.2, alpha=0.5,
+                            label="IEC rated sınır (98°C)")
+                ax9.fill_between(hrs[:n], pol.theta_hs_log, pol.theta_hs_target,
+                                 where=[t > pol.theta_hs_target for t in pol.theta_hs_log],
+                                 alpha=0.25, color="red", label="Hedef aşımı")
+
+                # Sağ eksen: Yaşlanma hızı V(t)
+                ax9r = ax9.twinx()
+                ax9r.fill_between(hrs[:n], 0, pol.aging_rate_log,
+                                  alpha=0.15, color="purple")
+                ax9r.plot(hrs[:n], pol.aging_rate_log,
+                          lw=1.5, color="purple", ls="-.", label="V(t) — Yaşlanma Hızı")
+                ax9r.axhline(1.0, color="purple", ls=":", lw=1.0, alpha=0.5,
+                             label="V=1 (normal yaşlanma)")
+                ax9r.set_ylabel("Yaşlanma Hızı V(t)", color="purple")
+                ax9r.tick_params(axis='y', labelcolor='purple')
+                ax9r.legend(loc="upper right")
+
+            ax9.set(xlabel="Gün Saati", ylabel="Sıcaklık (°C)",
+                    title="Panel 9: Trafo Termal — Hot-spot & Yağ Sıcaklığı  |  Sağ: Yaşlanma Hızı V(t)",
+                    xlim=(0, 24))
+            ax9.legend(loc="upper left"); ax9.grid(True, alpha=0.3)
+
+            # Panel 10: Dinamik limit vs statik limit + toplam yük (sol eksen)
+            #           Ortalama batarya sıcaklığı (sağ eksen)
+            ax10 = fig.add_subplot(gs[6, slice(None)])
+            if pol.dynamic_limit_log:
+                nd = len(pol.dynamic_limit_log)
+                ax10.plot(hrs[:nd], pol.dynamic_limit_log,
+                          lw=2.5, color="darkgreen", label="Dinamik Tavan (kW)")
+            ax10.fill_between(hrs, 0, r_u.power_timeseries,
+                              alpha=0.18, color="red")
+            ax10.plot(hrs, r_u.power_timeseries,
+                      lw=1.2, color="red", alpha=0.6, label="Algoritmasız Yük")
+            ax10.plot(hrs, r_m.power_timeseries,
+                      lw=2.0, color="steelblue", label=f"{ctrl_label} Yük")
+            ax10.plot(hrs, r_m.grid_limit_timeseries,
+                      color="firebrick", ls="--", lw=1.5, label="Statik Limit")
+
+            # Sağ eksen: Batarya sıcaklığı
+            bat_log = np.array(thermal_ctrl.bat_temp_log, dtype=float)
+            if len(bat_log) > 0 and not np.all(np.isnan(bat_log)):
+                ax10r = ax10.twinx()
+                valid = ~np.isnan(bat_log)
+                ax10r.plot(hrs[valid], bat_log[valid],
+                           lw=2.0, color="darkorange", ls="-.",
+                           label="Ort. Batarya Sıcaklığı (°C)")
+                ax10r.axhline(40.0, color="orange", ls=":", lw=1.3,
+                              label="BMS derating başlangıcı (40°C)")
+                ax10r.axhline(5.0, color="royalblue", ls=":", lw=1.0,
+                              label="Soğuk limit (5°C)")
+                ax10r.set_ylabel("Batarya Sıcaklığı (°C)", color="darkorange")
+                ax10r.tick_params(axis='y', labelcolor='darkorange')
+                ax10r.legend(loc="upper right")
+
+            ax10.set(xlabel="Gün Saati", ylabel="Güç (kW)",
+                     title="Panel 10: Dinamik Tavan vs Statik  |  Sağ: Ort. Batarya Sıcaklığı",
+                     xlim=(0, 24))
+            ax10.legend(loc="upper left"); ax10.grid(True, alpha=0.3)
+
         plt.savefig(filename, dpi=150, bbox_inches="tight")
         print(f"✓ Grafik: {filename}")
-        plt.show(block=False)  # Grafiği ekranda açar ama kodun akışını durdurmaz
+        plt.show(block=False)

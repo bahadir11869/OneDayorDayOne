@@ -12,7 +12,9 @@
       "Bash(curl -s http://localhost:8502)",
       "Bash(mkdir -p ~/.streamlit)",
       "Bash(cat)",
-      "Bash(echo \"EXIT:$?\")"
+      "Bash(echo \"EXIT:$?\")",
+      "Bash(python3 -c \"from models import *; print\\(''models.py OK''\\)\")",
+      "Bash(python3:*)"
     ]
   }
 }

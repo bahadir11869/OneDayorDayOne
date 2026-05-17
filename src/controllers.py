@@ -7,7 +7,8 @@ import copy
 import numpy as np
 
 from models import (
-    ChargingStation, GridLimitPolicy, EV, EVState, EVModel,
+    ChargingStation, GridLimitPolicy, DynamicGridLimitPolicy,
+    EV, EVState, EVModel,
     SimulationResult, VehicleSession, MetricsSummary
 )
 
@@ -428,31 +429,34 @@ class AdaptiveSoCController:
     """
     Trafo + Batarya Sağlığı Optimal Kontrolcü.
 
-    Trafo koruması:
-    - Soft peak ramp   : pik başlamadan 30 dk önce limit lineer düşer.
-    - Look-ahead tampon: sonraki 5 dk'nın max baz yükünü kullan.
-    - 20 kW sabit güvenlik payı.
-    - Dinamik peak tespiti: trafo doluluk % ve delta-T'ye bakarak
-      saat bağımsız biçimde peak moduna geçer (DynamicPeakDetector).
+    Trafo koruması (iki mod):
+    A) use_dynamic_grid_limit=False (statik mod — mevcut davranış):
+       - Soft peak ramp: pik 30 dk önce lineer düşer.
+       - DynamicPeakDetector: doluluk% + delta-T bazlı kısıtlama.
+    B) use_dynamic_grid_limit=True (termal mod — IEC 60076-7):
+       - DynamicGridLimitPolicy: θ_oil ODE, θ_hs, K_max → dinamik P_max.
+       - Termal durum kümülatif — sabah soğuk trafo → yüksek kapasite,
+         öğleden sonra ısınan trafo → düşen kapasite.
 
     Batarya sağlığı:
-    - C-rate ≤ 1.5C  (endüstri standardı; degradasyonu minimize eder).
-    - SoC taper — CC-CV eğrisi:
-        SoC < %50  → tam güç  (×1.00)
-        %50 – %70  → kademeli azalma (×1.00 → ×0.70)
-        %70 – %80  → CC-CV bölgesi  (×0.70 → ×0.20)
+    - C-rate ≤ 1.5C (endüstri standardı).
+    - SoC taper — CC-CV eğrisi (kontrolcü tarafı).
+    - Marjinal yaşlanma maliyeti (Wang 2011, Schmalstieg 2014):
+        use_aging_cost=True ise skor = w_urgency·mevcut − w_aging·aging_cost
+        aging > threshold → güç %50 kısılır.
 
     Öncelik ve dağıtım:
-    - Skor = (bekleme / kalan_enerji) × c_rate_headroom
+    - Skor = (bekleme / kalan_enerji) × c_rate_headroom [− w_aging × aging]
     - Orantılı water-filling: taşan bütçe diğer araçlara yeniden dağıtılır.
     """
 
     RAMP_MINUTES = 30
     LOOKAHEAD    = 5
     SAFETY_KW    = 20.0
+    SAFETY_KW_THERMAL = 5.0  # termal modda daha düşük (model kendi marjını içerir)
     MAX_C_RATE   = 1.5
 
-    def __init__(self, stations, limit_policy, bg_load):
+    def __init__(self, stations, limit_policy, bg_load, **kwargs):
         self.stations     = stations
         self.policy       = limit_policy
         self.bg_load      = bg_load
@@ -463,21 +467,41 @@ class AdaptiveSoCController:
         self.timeline_log = []
         self._peak_det    = DynamicPeakDetector(limit_policy.trafo_max_kw)
 
+        # Yeni parametreler — kwargs ile geriye uyumlu
+        self.use_dynamic_grid_limit   = kwargs.get('use_dynamic_grid_limit', True)
+        self.use_aging_cost           = kwargs.get('use_aging_cost', True)
+        self.w_urgency                = kwargs.get('w_urgency', 1.0)
+        self.w_aging                  = kwargs.get('w_aging', 0.5)
+        self.aging_throttle_threshold = kwargs.get('aging_throttle_threshold', 3.0)
+
+        # Termal mod aktif mi? (policy tipi ile belirlenir)
+        self._thermal_active = (
+            self.use_dynamic_grid_limit and
+            isinstance(limit_policy, DynamicGridLimitPolicy)
+        )
+
+        # Yaşlanma ve batarya termal metrikleri (reporting)
+        self._aging_costs: List[float] = []
+        self.bat_temp_log: List[float] = []   # dakika bazlı ortalama batarya sıcaklığı
+
     def compute_limit(self, minute: int) -> float:
         """
-        Limit şu üç katmandan hesaplanır (hangisi daha kısıtlayıcıysa o geçer):
-          1. Statik peak penceresi       → evening_peak_kw
-          2. Soft ramp (pik öncesi 30dk) → lineer geçiş
-          3. Dinamik peak tespiti        → load_pct / delta-T'ye göre kısıtlama
+        Termal mod:  DynamicGridLimitPolicy.current_limit_kw() → IEC bazlı tavan.
+        Statik mod:  3-katmanlı mevcut mantık (peak + ramp + DynamicPeakDetector).
         """
+        # ══════════ TERMAL MOD ═══════════════════════════════════════════════
+        if self._thermal_active:
+            return self.policy.current_limit_kw(minute, self.bg_load[minute])
+
+        # ══════════ STATİK MOD (mevcut davranış — bit-identical) ═════════════
         tod        = minute % 1440
         ramp_start = max(0, self.policy.peak_start_min - self.RAMP_MINUTES)
 
-        # ── Katman 1: statik peak penceresi ──────────────────────────────────
+        # Katman 1: statik peak penceresi
         if self.policy.peak_start_min <= tod < self.policy.peak_end_min:
             return self.policy.evening_peak_kw
 
-        # ── Katman 2: soft ramp ───────────────────────────────────────────────
+        # Katman 2: soft ramp
         if ramp_start <= tod < self.policy.peak_start_min:
             progress = (tod - ramp_start) / self.RAMP_MINUTES
             static_limit = self.policy.trafo_max_kw - progress * (
@@ -486,22 +510,19 @@ class AdaptiveSoCController:
         else:
             static_limit = self.policy.trafo_max_kw
 
-        # ── Katman 3: dinamik peak tespiti ───────────────────────────────────
+        # Katman 3: dinamik peak tespiti (DynamicPeakDetector)
         is_dyn_peak, load_pct, delta_kw = self._peak_det.detect(self.bg_load[minute])
 
         if is_dyn_peak:
             det = self._peak_det
             if load_pct >= det.LOAD_HIGH_PCT:
-                # Yük zaten yüksek → sert sınır
                 dyn_limit = self.policy.evening_peak_kw
             else:
-                # Yük orta ama yükseliyor → lineer interpolasyon
                 t = (load_pct - det.LOAD_MID_PCT) / (det.LOAD_HIGH_PCT - det.LOAD_MID_PCT)
                 t = max(0.0, min(1.0, t))
                 dyn_limit = self.policy.trafo_max_kw - t * (
                     self.policy.trafo_max_kw - self.policy.evening_peak_kw
                 )
-            # En kısıtlayıcı limiti seç
             return min(static_limit, dyn_limit)
 
         return static_limit
@@ -528,7 +549,8 @@ class AdaptiveSoCController:
         if not active:
             return allocs
 
-        budget = max(0.0, limit - future_base - self.SAFETY_KW)
+        safety = self.SAFETY_KW_THERMAL if self._thermal_active else self.SAFETY_KW
+        budget = max(0.0, limit - future_base - safety)
         caps   = {s.station_id: self.soc_tapered_power(s.current_ev, s.max_power_kw) for s in active}
 
         def score(s):
@@ -538,7 +560,16 @@ class AdaptiveSoCController:
             c_rate_headroom = max(0.1, self.MAX_C_RATE - (
                 ev.energy_delivered_kwh / max(ev.battery_capacity_kwh, 0.1)
             ))
-            return (wait / energy) * c_rate_headroom
+            base_score = (wait / energy) * c_rate_headroom
+
+            if not self.use_aging_cost:
+                return base_score
+
+            # Yaşlanma maliyeti: proposed_power ≈ cap (max alacağı güç tahmini)
+            proposed_power = caps[s.station_id]
+            aging = ev.marginal_aging_cost(proposed_power)
+            adjusted = self.w_urgency * base_score - self.w_aging * aging
+            return max(adjusted, 0.01)  # negatif skor önle
 
         pending = list(active)
         while budget > 0.01 and pending:
@@ -563,6 +594,38 @@ class AdaptiveSoCController:
             budget  = overflow
             pending = new_pending
 
+        # ── Aging throttle: yaşlanma maliyeti eşik üstündeyse gücü %50 kıs ──
+        if self.use_aging_cost:
+            surplus = 0.0
+            throttled_ids = set()
+            for s in active:
+                sid = s.station_id
+                if allocs[sid] > 0.01:
+                    aging_cost = s.current_ev.marginal_aging_cost(allocs[sid])
+                    self._aging_costs.append(aging_cost)
+                    if aging_cost > self.aging_throttle_threshold:
+                        cut = allocs[sid] * 0.50
+                        surplus += cut
+                        allocs[sid] -= cut
+                        throttled_ids.add(sid)
+
+            # Surplus'u throttle edilmemiş araçlara water-fill ile dağıt
+            if surplus > 0.01:
+                eligible = [s for s in active
+                            if s.station_id not in throttled_ids
+                            and allocs[s.station_id] < caps[s.station_id] - 0.01]
+                while surplus > 0.01 and eligible:
+                    share = surplus / len(eligible)
+                    new_eligible = []
+                    for s in eligible:
+                        room = caps[s.station_id] - allocs[s.station_id]
+                        give = min(share, room)
+                        allocs[s.station_id] += give
+                        surplus -= give
+                        if room - give > 0.01:
+                            new_eligible.append(s)
+                    eligible = new_eligible
+
         return allocs
 
     def step(self, minute: int):
@@ -580,18 +643,41 @@ class AdaptiveSoCController:
             if s.current_ev:
                 self.timeline_log.append({"Dakika": minute, "Araç ID": s.current_ev.session_id, "Durum": "Şarjda", "İstasyon": s.station_id, "Güç (kW)": round(allocs[s.station_id], 1), "SoC (%)": round(s.current_ev.current_soc * 100, 1), "BazGüç (kW)": round(self.bg_load[minute], 1)})
 
+        # Batarya sıcaklığını güncelle, sonra gücü uygula
+        ambient_temp = (
+            self.policy._ambient_temp(minute)
+            if self._thermal_active
+            else 25.0   # termal mod yoksa sabit referans sıcaklık
+        )
         for s in self.stations:
             if s.current_ev:
-                s.current_ev.apply_power(allocs[s.station_id], minute)
-                if s.current_ev.is_satisfied:
-                    s.current_ev.departure_minute = minute
-                    self.completed.append(s.current_ev)
+                ev = s.current_ev
+                alloc_kw = allocs[s.station_id]
+                # Önce batarya sıcaklığını güncelle (apply_power'dan önce)
+                ev.update_battery_temp(ambient_temp, alloc_kw)
+                ev.apply_power(alloc_kw, minute)
+                if ev.is_satisfied:
+                    ev.departure_minute = minute
+                    self.completed.append(ev)
                     s.current_ev = None
 
         total_power = self.bg_load[minute] + sum(allocs.values())
         self.power_log.append(total_power)
         self.limit_log.append(limit)
-        self._peak_det.update(total_power)   # dinamik dedektörü güncelle
+
+        # Ortalama batarya sıcaklığını logla (şarj eden araçlar)
+        charging_evs = [s.current_ev for s in self.stations if s.current_ev]
+        if charging_evs:
+            self.bat_temp_log.append(float(np.mean([ev.battery_temp_c for ev in charging_evs])))
+        else:
+            self.bat_temp_log.append(float('nan'))
+
+        # Termal model güncelle ve dinamik limit logla (her dakika 1 kez)
+        if self._thermal_active:
+            self.policy.update(minute, total_power)
+            self.policy.dynamic_limit_log.append(limit)
+        # Statik mod fallback — DynamicPeakDetector
+        self._peak_det.update(total_power)
 
 
 class Simulation:

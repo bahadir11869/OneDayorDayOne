@@ -22,9 +22,10 @@ if __name__ == "__main__" and __package__ is None:
     sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from models import (
-    EVState, StationType, EVModel, GridLimitPolicy, MetricsSummary,
-    VehicleSession, SimulationResult, EV, ChargingStation, EnvironmentProfile,
-    GridConfig, ArrivalPattern, FleetProfile, StationLayout, ScenarioConfig
+    EVState, StationType, EVModel, GridLimitPolicy, DynamicGridLimitPolicy,
+    MetricsSummary, VehicleSession, SimulationResult, EV, ChargingStation,
+    EnvironmentProfile, GridConfig, ArrivalPattern, FleetProfile,
+    StationLayout, ScenarioConfig
 )
 
 from generators import (
@@ -85,6 +86,8 @@ def main(generate_new: bool = False, config: Optional[ScenarioConfig] = None):
     st_c = copy.deepcopy(st_a)
     st_d = copy.deepcopy(st_a)
     st_e = copy.deepcopy(st_a)
+    st_f = copy.deepcopy(st_a)  # AdaptiveSoC_Statik
+    st_g = copy.deepcopy(st_a)  # AdaptiveSoC_Termal
 
     ctrl_a = UnmanagedController(st_a, policy, bg_load)
     res_a = Sim(ctrl_a, copy.deepcopy(schedule)).run()
@@ -101,33 +104,60 @@ def main(generate_new: bool = False, config: Optional[ScenarioConfig] = None):
     ctrl_e = DynamicFairController(st_e, policy, bg_load)
     res_e = Sim(ctrl_e, copy.deepcopy(schedule)).run()
 
+    # AdaptiveSoC_Statik — mevcut davranış (regression baseline)
+    ctrl_f = AdaptiveSoCController(st_f, policy, bg_load,
+                                   use_dynamic_grid_limit=False, use_aging_cost=False)
+    res_f = Sim(ctrl_f, copy.deepcopy(schedule)).run()
+
+    # AdaptiveSoC_Termal — IEC 60076-7 termal model + yaşlanma
+    policy_thermal = config.to_grid_limit_policy(use_dynamic=True, theta_hs_target=98.0)
+    ctrl_g = AdaptiveSoCController(st_g, policy_thermal, bg_load,
+                                   use_dynamic_grid_limit=True, use_aging_cost=True,
+                                   w_urgency=1.0, w_aging=0.25,
+                                   aging_throttle_threshold=3.0)
+    res_g = Sim(ctrl_g, copy.deepcopy(schedule)).run()
+
     # Orijinal ikili karşılaştırma raporunu koru
     export_comparative_excel(ctrl_a, ctrl_b)
 
-    # Tüm 5 kontrolcünün karşılaştırmalı raporu
+    # Tüm 7 kontrolcünün karşılaştırmalı raporu
     all_ctrls = [
-        ("Algoritmasiz", ctrl_a),
-        ("Yonetimli",    ctrl_b),
-        ("SRPT",         ctrl_c),
-        ("Su_Doldurma",  ctrl_d),
-        ("Dinamik_Adil", ctrl_e),
+        ("Algoritmasiz",       ctrl_a),
+        ("Yonetimli",          ctrl_b),
+        ("SRPT",               ctrl_c),
+        ("Su_Doldurma",        ctrl_d),
+        ("Dinamik_Adil",       ctrl_e),
+        ("AdaptiveSoC_Statik", ctrl_f),
+        ("AdaptiveSoC_Termal", ctrl_g),
     ]
     export_multi_controller_excel(all_ctrls)
 
     # Konsol özeti
-    print(f"\n{'Kontrolcü':<20} {'Araç':>6} {'MaksGüç(kW)':>12} {'AşımDk':>8} {'AşımkWh':>9} {'OrtBkl(dk)':>11} {'OrtŞarj(dk)':>12}")
-    print("-" * 82)
+    print(f"\n{'Kontrolcü':<22} {'Araç':>5} {'MaksGüç':>8} {'AşımDk':>7} {'AşımkWh':>8} {'OrtBkl':>7} {'OrtŞarj':>8} {'θ_hs_pk':>8} {'Aging':>6}")
+    print("-" * 100)
     for name, ctrl in all_ctrls:
         p = np.array(ctrl.power_log); l = np.array(ctrl.limit_log); over = p > l
         c = ctrl.completed
         avw = np.mean([e.wait_time_minutes for e in c]) if c else 0.0
         avc = np.mean([e.charge_minutes   for e in c]) if c else 0.0
-        print(f"{name:<20} {len(c):>6} {p.max():>12.1f} {int(over.sum()):>8} {float(np.where(over,p-l,0).sum()/60):>9.2f} {avw:>11.1f} {avc:>12.1f}")
+        # Termal metrikler (varsa)
+        if hasattr(ctrl, 'policy') and isinstance(ctrl.policy, DynamicGridLimitPolicy):
+            hs_pk = ctrl.policy.peak_hotspot
+            aging = ctrl.policy.aging_integral
+        else:
+            hs_pk = 0.0
+            aging = 0.0
+        print(f"{name:<22} {len(c):>5} {p.max():>8.1f} {int(over.sum()):>7} "
+              f"{float(np.where(over,p-l,0).sum()/60):>8.2f} {avw:>7.1f} {avc:>8.1f} "
+              f"{hs_pk:>8.1f} {aging:>6.3f}")
 
     ExecutiveDashboard.create(res_a, res_b, ctrl_label="Yönetimli",    filename="../OutputPNG/dashboard_yonetimli.png",    bg_load=bg_load)
     ExecutiveDashboard.create(res_a, res_c, ctrl_label="SRPT",         filename="../OutputPNG/dashboard_srpt.png",         bg_load=bg_load)
     ExecutiveDashboard.create(res_a, res_d, ctrl_label="Su Doldurma",  filename="../OutputPNG/dashboard_su_doldurma.png",  bg_load=bg_load)
     ExecutiveDashboard.create(res_a, res_e, ctrl_label="Dinamik Adil", filename="../OutputPNG/dashboard_dinamik_adil.png", bg_load=bg_load)
+    ExecutiveDashboard.create(res_a, res_g, ctrl_label="AdaptiveSoC Termal",
+                              filename="../OutputPNG/dashboard_termal.png",
+                              bg_load=bg_load, thermal_ctrl=ctrl_g)
 
     # Tüm pencerelerin ekranda aynı anda kalması için programı en sonda beklet:
     plt.show()

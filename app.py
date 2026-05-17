@@ -20,7 +20,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "src"))
 
 from controllers import AdaptiveSoCController, UnmanagedController
 from generators import ArrivalGenerator, BackgroundLoadGenerator, Scenarios
-from models import EV, ScenarioConfig
+from models import EV, ScenarioConfig, DynamicGridLimitPolicy
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -28,10 +28,15 @@ from models import EV, ScenarioConfig
 # ══════════════════════════════════════════════════════════════════
 
 def build_snapshots(schedule: dict, bg_load: np.ndarray, config: ScenarioConfig):
-    """AdaptiveSoC simülasyonu. (snapshots_list, vehicle_log_list) döner."""
-    policy   = config.to_grid_limit_policy()
+    """AdaptiveSoC (termal mod) simülasyonu. (snapshots_list, vehicle_log_list) döner."""
+    policy   = config.to_grid_limit_policy(use_dynamic=True, theta_hs_target=98.0)
     stations = copy.deepcopy(config.layout.stations)
-    ctrl     = AdaptiveSoCController(stations, policy, bg_load)
+    ctrl     = AdaptiveSoCController(
+        stations, policy, bg_load,
+        use_dynamic_grid_limit=True, use_aging_cost=True,
+        w_urgency=1.0, w_aging=0.25, aging_throttle_threshold=3.0,
+    )
+    is_thermal     = isinstance(policy, DynamicGridLimitPolicy)
     snapshots      = []
     overload_total = 0
     vehicle_events = {}
@@ -82,6 +87,17 @@ def build_snapshots(schedule: dict, bg_load: np.ndarray, config: ScenarioConfig)
         if over_kw > 0:
             overload_total += 1
 
+        # Batarya sıcaklığını bu dakikanın gücüne göre güncelle (apply_power öncesi)
+        ambient_temp = policy._ambient_temp(minute) if is_thermal else 25.0
+        for s in ctrl.stations:
+            if s.current_ev:
+                s.current_ev.update_battery_temp(ambient_temp, allocs[s.station_id])
+
+        # Termal durum anlık
+        theta_hs    = float(policy.theta_hs)   if is_thermal else 0.0
+        theta_oil   = float(policy.theta_oil)  if is_thermal else 0.0
+        aging_rate  = float(policy.aging_rate) if is_thermal else 0.0
+
         # Adaptif karar listesi
         active_stations    = [s for s in ctrl.stations if s.current_ev and not s.current_ev.is_satisfied]
         adaptive_decisions = []
@@ -111,6 +127,8 @@ def build_snapshots(schedule: dict, bg_load: np.ndarray, config: ScenarioConfig)
                 "is_ramp_active":    is_ramp,
                 "priority_score":    priority,
                 "no_budget":         pwr < 0.1,
+                "battery_temp_c":    round(float(ev.battery_temp_c), 1),
+                "aging_cost":        round(float(ev.marginal_aging_cost(pwr)), 4),
             })
 
         # İstasyon anlık durumu
@@ -135,6 +153,7 @@ def build_snapshots(schedule: dict, bg_load: np.ndarray, config: ScenarioConfig)
                     "charge_time_minutes":  int(charge_time),
                     "arrival_minute":       int(ev.arrival_minute),
                     "is_new":               ev.charge_start_minute == minute,
+                    "battery_temp_c":       round(float(ev.battery_temp_c), 1),
                 }
             station_states.append({
                 "id":           s.station_id,
@@ -176,6 +195,10 @@ def build_snapshots(schedule: dict, bg_load: np.ndarray, config: ScenarioConfig)
             "overload_kw":                round(over_kw, 1),
             "overload_total_minutes":     int(overload_total),
             "adaptive_decisions":         adaptive_decisions,
+            "theta_hs":                   round(theta_hs, 2),
+            "theta_oil":                  round(theta_oil, 2),
+            "aging_rate":                 round(aging_rate, 4),
+            "dynamic_limit_kw":          round(limit, 1) if is_thermal else None,
         })
 
         for s in ctrl.stations:
@@ -197,6 +220,10 @@ def build_snapshots(schedule: dict, bg_load: np.ndarray, config: ScenarioConfig)
 
         ctrl.power_log.append(total)
         ctrl.limit_log.append(limit)
+
+        # Termal modeli dakika sonunda güncelle (step() ile aynı sıra)
+        if is_thermal:
+            policy.update(minute, total)
 
     # Hâlâ şarjda / kuyrukta olanları logla
     for s in ctrl.stations:
@@ -419,7 +446,8 @@ def render_station_card(station: dict):
             ⚡ Atanan güç: <b>{station['power_kw']:.1f} kW</b><br>
             🔋 Verilen: <b>{ev['energy_delivered_kwh']:.2f} kWh</b><br>
             ⏳ Kalan: <b>{ev['energy_needed_kwh']:.2f} kWh</b><br>
-            🕐 Şarjda: <b>{ev['charge_time_minutes']} dk</b> &nbsp;|&nbsp; Bekledi: <b>{ev['wait_time_minutes']} dk</b>
+            🕐 Şarjda: <b>{ev['charge_time_minutes']} dk</b> &nbsp;|&nbsp; Bekledi: <b>{ev['wait_time_minutes']} dk</b><br>
+            🌡 Batarya: <b>{ev.get('battery_temp_c', 25.0):.1f}°C</b>
           </div>
         </div>"""
     else:
@@ -564,6 +592,9 @@ def render_adaptive_decisions(decisions: list):
                     unsafe_allow_html=True,
                 )
             with cb:
+                bat_temp = d.get("battery_temp_c", 25.0)
+                aging    = d.get("aging_cost", 0.0)
+                temp_col = "#ef4444" if bat_temp > 40 else ("#f59e0b" if bat_temp > 35 else "#94a3b8")
                 st.markdown(
                     f"🚗 **{d['model_name']}**  \n"
                     f"SoC: **{d['current_soc_pct']:.1f}%** &nbsp;|&nbsp; "
@@ -571,7 +602,10 @@ def render_adaptive_decisions(decisions: list):
                     f"C-rate: **{d['c_rate_actual']:.2f}C**  \n"
                     f"Kalan: `{d['energy_needed_kwh']:.2f}` kWh &nbsp;|&nbsp; "
                     f"Bekleme: {d['wait_minutes']} dk &nbsp;|&nbsp; "
-                    f"Skor: **{d['priority_score']}**"
+                    f"Skor: **{d['priority_score']}**  \n"
+                    f"<span style='color:{temp_col}'>🌡 {bat_temp:.1f}°C</span> &nbsp;|&nbsp; "
+                    f"Yaşlanma: `{aging:.4f}`",
+                    unsafe_allow_html=True,
                 )
             st.divider()
 
@@ -753,6 +787,153 @@ def render_vehicle_log(srpt_log: list, unman_log: list, snap: dict, current_minu
                 st.download_button("⬇️ CSV (Karşılaştırma)", csv3, file_name="karsilastirma.csv", mime="text/csv")
 
 
+def render_thermal_chart(snapshots: list, current_minute: int) -> go.Figure:
+    """θ_hs / θ_oil / V(t) aging rate ve dinamik limit grafiği."""
+    all_times = [s["time_str"] for s in snapshots]
+    n         = current_minute + 1
+    times     = all_times[:n]
+
+    theta_hs_data  = [s["theta_hs"]   for s in snapshots[:n]]
+    theta_oil_data = [s["theta_oil"]  for s in snapshots[:n]]
+    aging_data     = [s["aging_rate"] for s in snapshots[:n]]
+    limit_dyn      = [s["dynamic_limit_kw"] for s in snapshots[:n] if s.get("dynamic_limit_kw") is not None]
+    limit_times    = [s["time_str"]         for s in snapshots[:n] if s.get("dynamic_limit_kw") is not None]
+
+    fig = go.Figure()
+
+    # ── Dinamik limit (sağ eksen değil; kW ölçeği ayrı) ──
+    # Sol eksen: Sıcaklık (°C), Sağ eksen: V(t) aging
+    fig.add_trace(go.Scatter(
+        x=times, y=theta_hs_data,
+        name="θ_hs (Hot-spot)",
+        line=dict(color="#f97316", width=2.5),
+        hovertemplate="%{y:.1f}°C<extra>θ_hs</extra>",
+    ))
+    fig.add_trace(go.Scatter(
+        x=times, y=theta_oil_data,
+        name="θ_oil (Yağ)",
+        line=dict(color="#fb923c", width=1.8, dash="dot"),
+        hovertemplate="%{y:.1f}°C<extra>θ_oil</extra>",
+    ))
+    # IEC 98°C hedef çizgisi
+    fig.add_hline(y=98.0, line_color="#ef4444", line_dash="dash", line_width=1.5,
+                  annotation_text="IEC 98°C", annotation_font_color="#ef4444",
+                  annotation_position="top right")
+    # V(t) aging — sağ eksen
+    fig.add_trace(go.Scatter(
+        x=times, y=aging_data,
+        name="V(t) Yaşlanma",
+        line=dict(color="#a78bfa", width=2),
+        yaxis="y2",
+        hovertemplate="%{y:.3f}<extra>V(t)</extra>",
+    ))
+    # V(t)=1.0 referans
+    fig.add_hline(y=1.0, line_color="#a78bfa", line_dash="dot", line_width=1,
+                  yref="y2")
+
+    fig.update_layout(
+        uirevision="thermal_chart",
+        height=260,
+        margin=dict(l=0, r=60, t=8, b=0),
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="#0d1117",
+        font=dict(color="#94a3b8", size=11),
+        legend=dict(orientation="h", y=1.14, x=0, bgcolor="rgba(0,0,0,0)", font=dict(size=11)),
+        xaxis=dict(
+            range=[all_times[0], all_times[-1]],
+            showgrid=True, gridcolor="#1e293b",
+            tickvals=[all_times[i] for i in range(0, 1440, 60)],
+            ticktext=[f"{i:02d}:00" for i in range(24)],
+            tickfont=dict(size=10),
+        ),
+        yaxis=dict(
+            showgrid=True, gridcolor="#1e293b",
+            title=dict(text="Sıcaklık (°C)", font=dict(size=11)),
+        ),
+        yaxis2=dict(
+            overlaying="y", side="right",
+            title=dict(text="V(t) Yaşlanma", font=dict(size=11, color="#a78bfa")),
+            showgrid=False,
+            tickfont=dict(color="#a78bfa"),
+        ),
+        hovermode="x unified",
+    )
+    return fig
+
+
+def render_battery_temp_chart(snapshots: list, current_minute: int) -> go.Figure:
+    """Dinamik trafo limiti ve ortalama batarya sıcaklığı grafiği."""
+    all_times = [s["time_str"] for s in snapshots]
+    n         = current_minute + 1
+    times     = all_times[:n]
+
+    dyn_limit  = [s.get("dynamic_limit_kw") or 0.0 for s in snapshots[:n]]
+    total_pwr  = [s["total_power_kw"]              for s in snapshots[:n]]
+
+    # Batarya sıcaklığı: aktif araçların ortalaması (adaptive_decisions'dan)
+    bat_temps = []
+    for s in snapshots[:n]:
+        temps = [d["battery_temp_c"] for d in s["adaptive_decisions"] if "battery_temp_c" in d]
+        bat_temps.append(float(np.mean(temps)) if temps else float("nan"))
+
+    fig = go.Figure()
+
+    fig.add_trace(go.Scatter(
+        x=all_times[:n], y=dyn_limit,
+        name="Dinamik Limit",
+        line=dict(color="#ef4444", width=2, dash="dash"),
+        hovertemplate="%{y:.0f} kW<extra>Dinamik Limit</extra>",
+    ))
+    fig.add_trace(go.Scatter(
+        x=times, y=total_pwr,
+        name="Toplam Güç",
+        line=dict(color="#38bdf8", width=2),
+        hovertemplate="%{y:.1f} kW<extra>Toplam Güç</extra>",
+    ))
+    # Batarya sıcaklığı — sağ eksen
+    fig.add_trace(go.Scatter(
+        x=times, y=bat_temps,
+        name="Ort. Bat. Sıcaklık",
+        line=dict(color="#facc15", width=2),
+        yaxis="y2",
+        connectgaps=False,
+        hovertemplate="%{y:.1f}°C<extra>Bat. Sıcaklık</extra>",
+    ))
+    # 40°C BMS derating eşiği
+    fig.add_hline(y=40.0, line_color="#f59e0b", line_dash="dot", line_width=1.2,
+                  annotation_text="40°C BMS", annotation_font_color="#f59e0b",
+                  annotation_position="top right", yref="y2")
+
+    fig.update_layout(
+        uirevision="bat_temp_chart",
+        height=260,
+        margin=dict(l=0, r=60, t=8, b=0),
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="#0d1117",
+        font=dict(color="#94a3b8", size=11),
+        legend=dict(orientation="h", y=1.14, x=0, bgcolor="rgba(0,0,0,0)", font=dict(size=11)),
+        xaxis=dict(
+            range=[all_times[0], all_times[-1]],
+            showgrid=True, gridcolor="#1e293b",
+            tickvals=[all_times[i] for i in range(0, 1440, 60)],
+            ticktext=[f"{i:02d}:00" for i in range(24)],
+            tickfont=dict(size=10),
+        ),
+        yaxis=dict(
+            showgrid=True, gridcolor="#1e293b",
+            title=dict(text="kW", font=dict(size=11)),
+        ),
+        yaxis2=dict(
+            overlaying="y", side="right",
+            title=dict(text="Bat. Sıcaklık (°C)", font=dict(size=11, color="#facc15")),
+            showgrid=False,
+            tickfont=dict(color="#facc15"),
+        ),
+        hovermode="x unified",
+    )
+    return fig
+
+
 def render_adaptive_all_decisions(snapshots: list, current_minute: int):
     """O ana kadar verilen tüm adaptif kararları tablo olarak göster."""
     with st.expander(f"📜 Tüm Adaptif Karar Geçmişi  (0–{_fmt(current_minute)})", expanded=False):
@@ -772,6 +953,8 @@ def render_adaptive_all_decisions(snapshots: list, current_minute: int):
                     "Taper Bölge":   d["taper_zone"],
                     "Bekleme (dk)":  d["wait_minutes"],
                     "Skor":          d["priority_score"],
+                    "Bat. °C":       d.get("battery_temp_c", "-"),
+                    "Yaşlanma":      d.get("aging_cost", "-"),
                     "Ramp":          "✓" if d["is_ramp_active"] else "",
                     "Bütçe Yok":     "⛔" if d["no_budget"] else "",
                 })
@@ -894,10 +1077,11 @@ def main():
 
         st.divider()
         st.markdown(
-            "**Algoritma:** Adaptif SoC  \n"
-            "*Trafo:* Soft ramp (30 dk) + look-ahead  \n"
-            "*Batarya:* C-rate ≤1.5C, SoC taper  \n"
-            "*Öncelik:* (bekleme/enerji) × C-rate headroom"
+            "**Algoritma:** AdaptiveSoC Termal  \n"
+            "*Trafo:* IEC 60076-7 θ_hs modeli, dinamik limit  \n"
+            "*Batarya:* CC-CV taper, BMS derating, yaşlanma maliyeti  \n"
+            "*Öncelik:* (bekleme/enerji) × C-rate + yaşlanma ağırlığı  \n"
+            "*Termal:* θ_hs hedef 98°C, V(t) aging integral"
         )
 
     # ── İçerik yok ───────────────────────────────────────────────
@@ -964,13 +1148,36 @@ def main():
 
     st.markdown(
         f'<div style="background:#0f1f12;border:1px solid #166534;border-radius:8px;'
-        f'padding:10px 16px;margin-bottom:12px;font-size:0.85em;color:#bbf7d0;">'
+        f'padding:10px 16px;margin-bottom:8px;font-size:0.85em;color:#bbf7d0;">'
         f'<b>📊 Adaptif vs Algoritmasız (Gün Sonu Tahmini):</b>&nbsp;&nbsp;'
         f'Toplam Enerji: <b>Adaptif {srpt_final:.1f}</b> / Alg.sız {unman_total:.1f} kWh '
         f'<span style="color:{"#22c55e" if diff_energy >= 0 else "#ef4444"}">'
         f'({"+" if diff_energy >= 0 else ""}{diff_energy:.1f} kWh)</span>'
         f'&nbsp;|&nbsp; Aşım Azalması: <b style="color:#22c55e">-{diff_over} dk</b>'
         f'&nbsp;|&nbsp; Ort. Bekleme Azalması: <b style="color:#22c55e">-{diff_wait:.1f} dk</b>'
+        f'</div>',
+        unsafe_allow_html=True,
+    )
+
+    # ── Termal durum şeridi ──────────────────────────────────────
+    ths      = snap["theta_hs"]
+    toil     = snap["theta_oil"]
+    aging    = snap["aging_rate"]
+    peak_ths = max(s["theta_hs"] for s in st.session_state.snapshots[:snap["minute"] + 1])
+    ths_col  = "#ef4444" if ths >= 98 else ("#f59e0b" if ths >= 90 else "#22c55e")
+    overshoot_badge = (
+        '&nbsp; <span style="background:#7f1d1d;color:#fca5a5;padding:1px 7px;border-radius:5px">⚠️ AŞIM</span>'
+        if ths >= 98 else ""
+    )
+    st.markdown(
+        f'<div style="background:#0d1b2a;border:1px solid #1e3a5f;border-radius:8px;'
+        f'padding:8px 16px;margin-bottom:12px;font-size:0.82em;color:#94a3b8;">'
+        f'🌡 <b>Trafo Termal:</b>&nbsp;&nbsp;'
+        f'θ_hs anlık: <b style="color:{ths_col}">{ths:.1f}°C</b> &nbsp;|&nbsp; '
+        f'θ_oil: <b>{toil:.1f}°C</b> &nbsp;|&nbsp; '
+        f'θ_hs pik (bugün): <b style="color:#f97316">{peak_ths:.1f}°C</b> &nbsp;|&nbsp; '
+        f'V(t) yaşlanma: <b style="color:#a78bfa">{aging:.3f}</b>'
+        f'{overshoot_badge}'
         f'</div>',
         unsafe_allow_html=True,
     )
@@ -998,6 +1205,23 @@ def main():
         })
     with col_srpt:
         render_adaptive_decisions(snap["adaptive_decisions"])
+
+    # ── Termal grafikler ──────────────────────────────────────────
+    st.divider()
+    st.markdown("### 🌡 Termal Durum — Trafo & Batarya")
+    tc1, tc2 = st.columns(2)
+    with tc1:
+        st.markdown("**Trafo Hot-spot & Yaşlanma**")
+        fig_th = render_thermal_chart(st.session_state.snapshots, snap["minute"])
+        st.plotly_chart(fig_th, use_container_width=True, config={
+            "scrollZoom": True, "displayModeBar": False,
+        })
+    with tc2:
+        st.markdown("**Dinamik Limit & Batarya Sıcaklığı**")
+        fig_bt = render_battery_temp_chart(st.session_state.snapshots, snap["minute"])
+        st.plotly_chart(fig_bt, use_container_width=True, config={
+            "scrollZoom": True, "displayModeBar": False,
+        })
 
     # ── Kuyruk ───────────────────────────────────────────────────
     if snap["queue"]:
