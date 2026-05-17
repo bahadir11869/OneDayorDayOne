@@ -71,6 +71,10 @@ def build_snapshots(schedule: dict, bg_load: np.ndarray, config: ScenarioConfig)
 
         for s in ctrl.stations:
             if not s.current_ev and ctrl.queue:
+                # Öncelik: uzun bekleyen + az enerjisi kalan → en yüksek skor = en acil
+                ctrl.queue.sort(
+                    key=lambda ev: -(minute - ev.arrival_minute + 1) / max(ev.energy_needed_kwh, 0.01)
+                )
                 s.current_ev = ctrl.queue.pop(0)
                 s.current_ev.charge_start_minute = minute
                 sid = s.current_ev.session_id
@@ -1200,6 +1204,20 @@ def render_bat_temp_tab(srpt_temp_log: dict, unman_temp_log: dict):
 def render_lifetime_tab(vehicle_log_algo: list, vehicle_log_unman: list):
     """Şarj boyunca ömür tüketimi tabı — elektrolit + mekanik stres."""
     st.markdown("### 🔋 Şarj Boyunca Ömür Tüketimi")
+    st.info(
+        "**Metodoloji — Boyutsuz Stres İndeksleri (NMC modeli)**\n\n"
+        "- **Elektrolit Bozulma** `elec_deg_integral`: SoC > %50'de üstel artış × Arrhenius(T_bat). "
+        "Yüksek SoC'da uzun süre beklemek veya şarj etmek elektrolit oksidasyonunu hızlandırır "
+        "*(Severson et al., Nature Energy 2019)*.\n"
+        "- **Mekanik Stres** `mech_stress_integral`: C-rate² × Arrhenius(T_bat). "
+        "Yüksek akım yoğunluğu anot/katot katmanlarında hacim değişimine yol açar "
+        "*(Wang et al., J. Power Sources 2011)*.\n"
+        "- **Toplam Ömür** = elec + mech integrali. Değerler **birimsiz göreceli indeksler** olup "
+        "gerçek kapasite kaybı (%) ile doğrudan eşleşmez. "
+        "Adaptif − Algoritmasız **farkı** anlamlıdır; daha düşük = daha az stres.\n"
+        "- Arrhenius referans sıcaklığı 25°C; 10°C artış yaşlanmayı ~2× hızlandırır. "
+        "Ağırlıklar (elec 0.50, mech 0.35, SEI 0.15) kalibrasyon verisi olmadan ayarlanmıştır."
+    )
 
     def _tbl(log):
         rows = []
@@ -1330,10 +1348,18 @@ def render_best_worst_panel(snapshots: list, unmanaged: dict,
     hot_u, cool_u, mdeg_u, ldeg_u = _bat_stats(vehicle_log_unman)
 
     # Adaptif maks/min şarj süreleri (tamamlanan + yarım kalan araçlar)
-    _charged_a = [v for v in vehicle_log_algo
-                  if isinstance(v.get("charge_minutes"), (int, float)) and v["charge_minutes"] > 0]
-    _max_chg_a = max(_charged_a, key=lambda v: v["charge_minutes"]) if _charged_a else None
-    _min_chg_a = min(_charged_a, key=lambda v: v["charge_minutes"]) if _charged_a else None
+    _charged_a  = [v for v in vehicle_log_algo
+                   if isinstance(v.get("charge_minutes"), (int, float)) and v["charge_minutes"] > 0]
+    _max_chg_a  = max(_charged_a, key=lambda v: v["charge_minutes"]) if _charged_a else None
+    _min_chg_a  = min(_charged_a, key=lambda v: v["charge_minutes"]) if _charged_a else None
+    # Adaptif maks/min bekleme süreleri
+    _waited_a   = [v for v in vehicle_log_algo
+                   if isinstance(v.get("wait_minutes"), (int, float))]
+    _max_wait_a = max(_waited_a, key=lambda v: v["wait_minutes"]) if _waited_a else None
+    _min_wait_a = min(_waited_a, key=lambda v: v["wait_minutes"]) if _waited_a else None
+    # Algoritmasız eşleştirme — aynı araç unmanaged simülasyonda ne kadar sürdü?
+    _unman_chg  = {v["session_id"]: v for v in vehicle_log_unman
+                   if isinstance(v.get("charge_minutes"), (int, float)) and v["charge_minutes"] > 0}
 
     cc1, cc2 = st.columns(2)
     with cc1:
@@ -1341,14 +1367,28 @@ def render_best_worst_panel(snapshots: list, unmanaged: dict,
         if hot_a:
             total_a  = (mdeg_a.get("elec_deg_integral") or 0) + (mdeg_a.get("mech_stress_integral") or 0)
             total_la = (ldeg_a.get("elec_deg_integral") or 0) + (ldeg_a.get("mech_stress_integral") or 0)
+            def _chg_ratio_str(v_algo):
+                """Adaptif / algoritmasız şarj süresi oranı."""
+                if v_algo is None:
+                    return ""
+                u = _unman_chg.get(v_algo["session_id"])
+                if u:
+                    ratio = v_algo["charge_minutes"] / u["charge_minutes"]
+                    col   = "#ef4444" if ratio > 1.15 else ("#f59e0b" if ratio > 1.0 else "#22c55e")
+                    return (f' &nbsp;<span style="color:{col};font-size:0.88em">'
+                            f'(alg.sız: {int(u["charge_minutes"])} dk → {ratio:.2f}×)</span>')
+                return ""
+
             max_chg_line = (
                 f'⏱ <b>En uzun şarj:</b> {_max_chg_a["session_id"]} ({_max_chg_a["model_name"]}) — '
-                f'<span style="color:#f97316">{int(_max_chg_a["charge_minutes"])} dk</span><br>'
+                f'<span style="color:#f97316">{int(_max_chg_a["charge_minutes"])} dk</span>'
+                f'{_chg_ratio_str(_max_chg_a)}<br>'
                 if _max_chg_a else ""
             )
             min_chg_line = (
                 f'⚡ <b>En kısa şarj:</b> {_min_chg_a["session_id"]} ({_min_chg_a["model_name"]}) — '
-                f'<span style="color:#22c55e">{int(_min_chg_a["charge_minutes"])} dk</span><br>'
+                f'<span style="color:#22c55e">{int(_min_chg_a["charge_minutes"])} dk</span>'
+                f'{_chg_ratio_str(_min_chg_a)}<br>'
                 if _min_chg_a else ""
             )
             st.markdown(
@@ -1359,7 +1399,18 @@ def render_best_worst_panel(snapshots: list, unmanaged: dict,
                 f'✅ <b>En az ömür:</b> {ldeg_a["session_id"]} — <span style="color:#22c55e">{total_la:.5f}</span><br>'
                 f'<hr style="border-color:#1e3a5f;margin:6px 0;">'
                 f'{max_chg_line}{min_chg_line}'
-                f'</div>', unsafe_allow_html=True)
+                f'<hr style="border-color:#1e3a5f;margin:6px 0;">'
+                + (
+                    f'🕐 <b>En uzun bekleme:</b> {_max_wait_a["session_id"]} ({_max_wait_a["model_name"]}) — '
+                    f'<span style="color:#f97316">{int(_max_wait_a["wait_minutes"])} dk</span><br>'
+                    if _max_wait_a else ""
+                )
+                + (
+                    f'✅ <b>En kısa bekleme:</b> {_min_wait_a["session_id"]} ({_min_wait_a["model_name"]}) — '
+                    f'<span style="color:#22c55e">{int(_min_wait_a["wait_minutes"])} dk</span><br>'
+                    if _min_wait_a else ""
+                )
+                + f'</div>', unsafe_allow_html=True)
     with cc2:
         st.markdown("#### 🔋 Batarya — Algoritmasız")
         if hot_u:

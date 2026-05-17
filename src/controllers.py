@@ -450,11 +450,12 @@ class AdaptiveSoCController:
     - Orantılı water-filling: taşan bütçe diğer araçlara yeniden dağıtılır.
     """
 
-    RAMP_MINUTES = 30
-    LOOKAHEAD    = 5
-    SAFETY_KW    = 20.0
+    RAMP_MINUTES  = 30
+    LOOKAHEAD     = 5
+    SAFETY_KW     = 20.0
     SAFETY_KW_THERMAL = 5.0  # termal modda daha düşük (model kendi marjını içerir)
-    MAX_C_RATE   = 1.5
+    MAX_C_RATE    = 1.5
+    KEEP_ALIVE_KW = 5.0      # her aktif araca minimum güç garantisi — 0 kW yasağı
 
     def __init__(self, stations, limit_policy, bg_load, **kwargs):
         self.stations     = stations
@@ -567,6 +568,14 @@ class AdaptiveSoCController:
         budget = max(0.0, limit - future_base - safety)
         caps   = {s.station_id: self.soc_tapered_power(s.current_ev, s.max_power_kw) for s in active}
 
+        # ── Keep-alive: her aktif araca minimum güç garantisi — 0 kW yasağı ──
+        # Bütçe çok sıkışık olsa bile araç tamamen açta bırakılmaz.
+        for s in active:
+            give = min(self.KEEP_ALIVE_KW, caps[s.station_id], budget)
+            if give > 0.01:
+                allocs[s.station_id] = give
+                budget -= give
+
         def score(s):
             ev              = s.current_ev
             wait            = minute - ev.arrival_minute + 1
@@ -584,7 +593,8 @@ class AdaptiveSoCController:
             adjusted = self.w_urgency * base_score - self.w_aging * aging
             return max(adjusted, 0.01)  # negatif skor önle
 
-        pending = list(active)
+        # Water-fill: keep-alive üstüne kalan bütçeyi dağıt
+        pending = [s for s in active if allocs[s.station_id] < caps[s.station_id] - 0.01]
         while budget > 0.01 and pending:
             scores      = {s.station_id: score(s) for s in pending}
             total_score = sum(scores.values())
@@ -654,6 +664,10 @@ class AdaptiveSoCController:
     def step(self, minute: int):
         for s in self.stations:
             if not s.current_ev and self.queue:
+                # Öncelik: uzun bekleyen + az enerjisi kalan → en yüksek skor = en acil
+                self.queue.sort(
+                    key=lambda ev: -(minute - ev.arrival_minute + 1) / max(ev.energy_needed_kwh, 0.01)
+                )
                 s.current_ev = self.queue.pop(0)
                 s.current_ev.charge_start_minute = minute
 

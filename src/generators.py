@@ -99,9 +99,9 @@ class Scenarios:
                     EVModel("Porsche Taycan", 93.4, 270.0, 0.05),
                 ],
                 arrival_patterns=[
-                    ArrivalPattern(mean_hour=9.5,  std_minutes=40, fraction=0.25),
-                    ArrivalPattern(mean_hour=13.0, std_minutes=35, fraction=0.25),
-                    ArrivalPattern(mean_hour=18.5, std_minutes=75, fraction=0.50),
+                    ArrivalPattern(mean_hour=9.5,  std_minutes=25, fraction=0.25),
+                    ArrivalPattern(mean_hour=13.0, std_minutes=20, fraction=0.25),
+                    ArrivalPattern(mean_hour=18.5, std_minutes=40, fraction=0.50),
                 ],
             ),
             layout=StationLayout([
@@ -144,8 +144,8 @@ class Scenarios:
                     EVModel("Porsche Taycan", 93.4, 270.0, 0.05),
                 ],
                 arrival_patterns=[
-                    ArrivalPattern(mean_hour=8.5,  std_minutes=30, fraction=0.70),
-                    ArrivalPattern(mean_hour=13.0, std_minutes=45, fraction=0.30),
+                    ArrivalPattern(mean_hour=8.5,  std_minutes=20, fraction=0.70),
+                    ArrivalPattern(mean_hour=13.0, std_minutes=20, fraction=0.30),
                 ],
             ),
             layout=StationLayout([
@@ -188,8 +188,8 @@ class Scenarios:
                     EVModel("Porsche Taycan", 93.4, 270.0, 0.05),
                 ],
                 arrival_patterns=[
-                    ArrivalPattern(mean_hour=15.0, std_minutes=90, fraction=0.40),
-                    ArrivalPattern(mean_hour=20.0, std_minutes=60, fraction=0.60),
+                    ArrivalPattern(mean_hour=15.0, std_minutes=45, fraction=0.40),
+                    ArrivalPattern(mean_hour=20.0, std_minutes=30, fraction=0.60),
                 ],
             ),
             layout=StationLayout([
@@ -232,9 +232,9 @@ class Scenarios:
                     EVModel("Porsche Taycan", 93.4, 270.0, 0.05),
                 ],
                 arrival_patterns=[
-                    ArrivalPattern(mean_hour=7.5,  std_minutes=20, fraction=0.34),
-                    ArrivalPattern(mean_hour=15.5, std_minutes=20, fraction=0.33),
-                    ArrivalPattern(mean_hour=23.5, std_minutes=20, fraction=0.33),
+                    ArrivalPattern(mean_hour=7.5,  std_minutes=12, fraction=0.34),
+                    ArrivalPattern(mean_hour=15.5, std_minutes=12, fraction=0.33),
+                    ArrivalPattern(mean_hour=23.5, std_minutes=12, fraction=0.33),
                 ],
             ),
             layout=StationLayout([
@@ -277,8 +277,8 @@ class Scenarios:
                     EVModel("Porsche Taycan", 93.4, 270.0, 0.05),
                 ],
                 arrival_patterns=[
-                    ArrivalPattern(mean_hour=6.5,  std_minutes=60, fraction=0.50),
-                    ArrivalPattern(mean_hour=17.5, std_minutes=60, fraction=0.50),
+                    ArrivalPattern(mean_hour=6.5,  std_minutes=35, fraction=0.50),
+                    ArrivalPattern(mean_hour=17.5, std_minutes=35, fraction=0.50),
                 ],
             ),
             layout=StationLayout([
@@ -321,8 +321,8 @@ class Scenarios:
                 ambient_temp_peak_hour=14.0,
             ),
             grid=GridConfig(
-                trafo_kva=800,
-                evening_peak_kw=500.0,
+                trafo_kva=1000,
+                evening_peak_kw=620.0,
                 peak_start_hour=17.0,
                 peak_end_hour=22.0,
                 delta_theta_oil_rated=55.0,
@@ -342,9 +342,9 @@ class Scenarios:
                     EVModel("MG4 Standard", 51.0, 117.0, 0.10),
                 ],
                 arrival_patterns=[
-                    ArrivalPattern(mean_hour=8.0,  std_minutes=20, fraction=0.30),
-                    ArrivalPattern(mean_hour=12.5, std_minutes=25, fraction=0.20),
-                    ArrivalPattern(mean_hour=17.5, std_minutes=20, fraction=0.50),
+                    ArrivalPattern(mean_hour=8.0,  std_minutes=12, fraction=0.15),
+                    ArrivalPattern(mean_hour=12.5, std_minutes=12, fraction=0.15),
+                    ArrivalPattern(mean_hour=17.5, std_minutes=12, fraction=0.70),
                 ],
             ),
             layout=StationLayout([

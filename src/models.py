@@ -164,6 +164,20 @@ class DynamicGridLimitPolicy(GridLimitPolicy):
         # En kısıtlayıcı
         K_max = min(K_max_inst, K_max_ss_peak, K_max_ss_now)
 
+        # ── Anlık yük yoğunluğu düzeltmesi ─────────────────────────────────
+        # Baz yük oranı (bg/s_rated) yüksekken termal marjin daha çabuk erir;
+        # K_max'ı hafifçe kıs. Baz yük düşükken trafo soğuk kalır; küçük bonus.
+        #   load_ratio > 0.50 → her 0.10 artış için K_max'a -%2 (max -%10)
+        #   load_ratio < 0.30 → her 0.10 azalış için K_max'a +%1 (max +%3)
+        load_ratio = bg_load_kw / max(self._s_rated, 1.0)
+        if load_ratio > 0.50:
+            density_adj = -min((load_ratio - 0.50) * 0.20, 0.10)
+        elif load_ratio < 0.30:
+            density_adj = min((0.30 - load_ratio) * 0.10, 0.03)
+        else:
+            density_adj = 0.0
+        K_max = max(0.0, K_max * (1.0 + density_adj))
+
         if K_max <= 0:
             p_max = bg_load_kw + self._hard_floor_base
         else:
