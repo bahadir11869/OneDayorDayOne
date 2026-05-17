@@ -33,7 +33,8 @@ from generators import (
 
 from controllers import (
     UnmanagedController, ManagedController, SRPTController,
-    WaterFillingController, DynamicFairController, Simulation as Sim
+    WaterFillingController, DynamicFairController, AdaptiveSoCController,
+    Simulation as Sim
 )
 
 from export import (

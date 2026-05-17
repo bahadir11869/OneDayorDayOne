@@ -18,7 +18,7 @@ import streamlit as st
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "src"))
 
-from controllers import SRPTController, UnmanagedController
+from controllers import AdaptiveSoCController, UnmanagedController
 from generators import ArrivalGenerator, BackgroundLoadGenerator, Scenarios
 from models import EV, ScenarioConfig
 
@@ -28,13 +28,13 @@ from models import EV, ScenarioConfig
 # ══════════════════════════════════════════════════════════════════
 
 def build_snapshots(schedule: dict, bg_load: np.ndarray, config: ScenarioConfig):
-    """SRPT simülasyonu. (snapshots_list, vehicle_log_list) döner."""
+    """AdaptiveSoC simülasyonu. (snapshots_list, vehicle_log_list) döner."""
     policy   = config.to_grid_limit_policy()
     stations = copy.deepcopy(config.layout.stations)
-    ctrl     = SRPTController(stations, policy, bg_load)
-    snapshots        = []
-    overload_total   = 0
-    vehicle_events   = {}   # session_id → event dict (log için)
+    ctrl     = AdaptiveSoCController(stations, policy, bg_load)
+    snapshots      = []
+    overload_total = 0
+    vehicle_events = {}
 
     for minute in range(1440):
         for ev in schedule.get(minute, []):
@@ -66,40 +66,51 @@ def build_snapshots(schedule: dict, bg_load: np.ndarray, config: ScenarioConfig)
                 sid = s.current_ev.session_id
                 vehicle_events[sid]["charge_start_minute"] = minute
                 vehicle_events[sid]["charge_start_time"]   = _fmt(minute)
-                vehicle_events[sid]["wait_minutes"]         = minute - vehicle_events[sid]["arrival_minute"]
-                vehicle_events[sid]["status"]               = "Şarjda"
+                vehicle_events[sid]["wait_minutes"]        = minute - vehicle_events[sid]["arrival_minute"]
+                vehicle_events[sid]["status"]              = "Şarjda"
 
-        allocs   = ctrl.allocate_power(minute)
-        tod      = minute % 1440
-        is_peak  = policy.peak_start_min <= tod < policy.peak_end_min
-        limit    = policy.evening_peak_kw if is_peak else policy.trafo_max_kw
-        bg       = float(bg_load[minute])
-        ev_load  = float(sum(allocs.values()))
-        total    = bg + ev_load
-        over_kw  = max(0.0, total - limit)
+        allocs     = ctrl.allocate_power(minute)
+        tod        = minute % 1440
+        limit      = ctrl.compute_limit(minute)
+        is_peak    = policy.peak_start_min <= tod < policy.peak_end_min
+        ramp_start = max(0, policy.peak_start_min - AdaptiveSoCController.RAMP_MINUTES)
+        is_ramp    = ramp_start <= tod < policy.peak_start_min
+        bg         = float(bg_load[minute])
+        ev_load    = float(sum(allocs.values()))
+        total      = bg + ev_load
+        over_kw    = max(0.0, total - limit)
         if over_kw > 0:
             overload_total += 1
 
-        # SRPT karar listesi
-        active_stations = [s for s in ctrl.stations if s.current_ev and not s.current_ev.is_satisfied]
-        srpt_decisions  = []
-        for s in sorted(active_stations, key=lambda x: _srpt_key(x.current_ev, minute)):
-            ev     = s.current_ev
-            wait   = minute - ev.arrival_minute
-            energy = ev.energy_needed_kwh
-            pen    = 1.0 / (1.0 + 0.05 * (wait - 15)) if wait > 15 else 1.0
-            pwr    = round(allocs.get(s.station_id, 0.0), 1)
-            srpt_decisions.append({
-                "station_id":           s.station_id,
-                "session_id":           ev.session_id,
-                "model_name":           ev.model_name,
-                "energy_needed_kwh":    round(energy, 2),
-                "effective_energy_kwh": round(energy * pen, 2),
-                "wait_minutes":         wait,
-                "power_kw":             pwr,
-                "current_soc_pct":      round(ev.current_soc * 100, 1),
-                "has_wait_bonus":       wait > 15,
-                "no_budget":            pwr < 0.1,
+        # Adaptif karar listesi
+        active_stations    = [s for s in ctrl.stations if s.current_ev and not s.current_ev.is_satisfied]
+        adaptive_decisions = []
+        for s in active_stations:
+            ev         = s.current_ev
+            pwr        = round(allocs.get(s.station_id, 0.0), 1)
+            wait       = minute - ev.arrival_minute
+            energy     = ev.energy_needed_kwh
+            taper_cap  = ctrl.soc_tapered_power(ev, s.max_power_kw)
+            soc        = ev.current_soc
+            c_rate_headroom = max(0.1, AdaptiveSoCController.MAX_C_RATE - (
+                ev.energy_delivered_kwh / max(ev.battery_capacity_kwh, 0.1)
+            ))
+            priority   = round((wait + 1) / max(energy, 0.01) * c_rate_headroom, 2)
+            taper_zone = "CC-CV" if soc >= 0.70 else ("Taper" if soc >= 0.50 else "Normal")
+            adaptive_decisions.append({
+                "station_id":        s.station_id,
+                "session_id":        ev.session_id,
+                "model_name":        ev.model_name,
+                "energy_needed_kwh": round(energy, 2),
+                "wait_minutes":      wait,
+                "power_kw":          pwr,
+                "current_soc_pct":   round(soc * 100, 1),
+                "tapered_cap_kw":    round(taper_cap, 1),
+                "c_rate_actual":     round(pwr / ev.battery_capacity_kwh, 3) if ev.battery_capacity_kwh > 0 else 0,
+                "taper_zone":        taper_zone,
+                "is_ramp_active":    is_ramp,
+                "priority_score":    priority,
+                "no_budget":         pwr < 0.1,
             })
 
         # İstasyon anlık durumu
@@ -126,22 +137,22 @@ def build_snapshots(schedule: dict, bg_load: np.ndarray, config: ScenarioConfig)
                     "is_new":               ev.charge_start_minute == minute,
                 }
             station_states.append({
-                "id":          s.station_id,
-                "type":        s.station_type.value,
+                "id":           s.station_id,
+                "type":         s.station_type.value,
                 "max_power_kw": float(s.max_power_kw),
-                "occupied":    s.current_ev is not None,
-                "ev":          ev_data,
-                "power_kw":    round(allocs.get(s.station_id, 0.0), 1),
+                "occupied":     s.current_ev is not None,
+                "ev":           ev_data,
+                "power_kw":     round(allocs.get(s.station_id, 0.0), 1),
             })
 
         # Kuyruk
         queue_state = [{
-            "session_id":         ev.session_id,
-            "model_name":         ev.model_name,
-            "arrival_minute":     int(ev.arrival_minute),
-            "wait_minutes":       int(minute - ev.arrival_minute),
-            "initial_soc_pct":    round(float(ev.initial_soc) * 100, 1),
-            "energy_needed_kwh":  round(float(ev.energy_needed_kwh), 2),
+            "session_id":           ev.session_id,
+            "model_name":           ev.model_name,
+            "arrival_minute":       int(ev.arrival_minute),
+            "wait_minutes":         int(minute - ev.arrival_minute),
+            "initial_soc_pct":      round(float(ev.initial_soc) * 100, 1),
+            "energy_needed_kwh":    round(float(ev.energy_needed_kwh), 2),
             "battery_capacity_kwh": float(ev.battery_capacity_kwh),
         } for ev in ctrl.queue]
 
@@ -158,12 +169,13 @@ def build_snapshots(schedule: dict, bg_load: np.ndarray, config: ScenarioConfig)
             "total_power_kw":             round(total, 1),
             "grid_limit_kw":              round(limit, 1),
             "is_peak":                    bool(is_peak),
+            "is_ramp":                    bool(is_ramp),
             "completed_count":            int(len(ctrl.completed)),
             "avg_wait_minutes":           round(avg_wait, 1),
             "total_energy_delivered_kwh": round(total_energy, 1),
             "overload_kw":                round(over_kw, 1),
             "overload_total_minutes":     int(overload_total),
-            "srpt_decisions":             srpt_decisions,
+            "adaptive_decisions":         adaptive_decisions,
         })
 
         for s in ctrl.stations:
@@ -297,14 +309,6 @@ def run_unmanaged(schedule: dict, bg_load: np.ndarray, config: ScenarioConfig) -
         "peak_power":       round(float(p.max()), 1),
         "vehicle_log":      sorted(vehicle_events.values(), key=lambda x: x["arrival_minute"]),
     }
-
-
-def _srpt_key(ev, minute):
-    energy = ev.energy_needed_kwh
-    wait   = minute - ev.arrival_minute
-    if wait > 15:
-        energy *= 1.0 / (1.0 + 0.05 * (wait - 15))
-    return energy
 
 
 def _fmt(m: int) -> str:
@@ -485,11 +489,11 @@ def render_power_chart(snapshots: list, unmanaged: dict, current_minute: int) ->
     # ── SRPT toplam (baz üstü alan; boşluklar None'dan oluşur) ──
     fig.add_trace(go.Scatter(
         x=times_done, y=srpt_total,
-        fill="tonexty", name="SRPT EV Yükü",
+        fill="tonexty", name="Adaptif EV Yükü",
         line=dict(color="#38bdf8", width=2.5),
         fillcolor="rgba(56,189,248,0.40)",
         connectgaps=False,
-        hovertemplate="%{y:.1f} kW<extra>SRPT Toplam</extra>",
+        hovertemplate="%{y:.1f} kW<extra>Adaptif Toplam</extra>",
     ))
 
     # ── Anlık saat çizgisi ──
@@ -522,8 +526,8 @@ def render_power_chart(snapshots: list, unmanaged: dict, current_minute: int) ->
     return fig
 
 
-def render_srpt_decisions(decisions: list):
-    st.markdown("### 🧠 SRPT Kararları")
+def render_adaptive_decisions(decisions: list):
+    st.markdown("### 🧠 Adaptif Kararlar")
     if not decisions:
         st.info("Bu dakikada aktif şarj yok.")
         return
@@ -541,22 +545,33 @@ def render_srpt_decisions(decisions: list):
                 unsafe_allow_html=True,
             )
         else:
-            bonus = " 🎯 bekleme bonusu" if d["has_wait_bonus"] else ""
+            zone_colors = {"Normal": "#22c55e", "Taper": "#f59e0b", "CC-CV": "#f97316"}
+            zone_color  = zone_colors.get(d["taper_zone"], "#94a3b8")
+            ramp_badge  = (
+                '<span style="background:#854d0e;color:#fef3c7;padding:1px 5px;'
+                'border-radius:5px;font-size:0.65em;margin-left:4px;">RAMP</span>'
+                if d["is_ramp_active"] else ""
+            )
             ca, cb = st.columns([1, 2])
             with ca:
                 st.markdown(
                     f"<div style='background:#1e293b;border-radius:8px;padding:8px;text-align:center;'>"
                     f"<b style='color:#60a5fa'>{d['station_id']}</b><br>"
-                    f"<span style='font-size:1.15em;font-weight:700;color:#22c55e'>{d['power_kw']} kW</span>"
+                    f"<span style='font-size:1.15em;font-weight:700;color:#22c55e'>{d['power_kw']} kW</span><br>"
+                    f"<span style='font-size:0.72em;color:{zone_color};font-weight:600'>{d['taper_zone']}</span>"
+                    f"{ramp_badge}"
                     f"</div>",
                     unsafe_allow_html=True,
                 )
             with cb:
                 st.markdown(
                     f"🚗 **{d['model_name']}**  \n"
-                    f"SoC: **{d['current_soc_pct']:.1f}%**  \n"
-                    f"Kalan: `{d['energy_needed_kwh']:.2f}` → eff: **{d['effective_energy_kwh']:.2f}** kWh{bonus}  \n"
-                    f"Bekleme: {d['wait_minutes']} dk"
+                    f"SoC: **{d['current_soc_pct']:.1f}%** &nbsp;|&nbsp; "
+                    f"Tavan: `{d['tapered_cap_kw']} kW` &nbsp;|&nbsp; "
+                    f"C-rate: **{d['c_rate_actual']:.2f}C**  \n"
+                    f"Kalan: `{d['energy_needed_kwh']:.2f}` kWh &nbsp;|&nbsp; "
+                    f"Bekleme: {d['wait_minutes']} dk &nbsp;|&nbsp; "
+                    f"Skor: **{d['priority_score']}**"
                 )
             st.divider()
 
@@ -636,7 +651,7 @@ def render_vehicle_log(srpt_log: list, unman_log: list, snap: dict, current_minu
         srpt_live  = _build_live_log(srpt_log,  snap, current_minute)
         unman_live = _build_live_log(unman_log, snap, current_minute)
 
-        tab_srpt, tab_unman, tab_diff = st.tabs(["⚡ SRPT", "🔴 Algoritmasız", "📊 Karşılaştırma"])
+        tab_srpt, tab_unman, tab_diff = st.tabs(["⚡ Adaptif", "🔴 Algoritmasız", "📊 Karşılaştırma"])
 
         # ── Tab 1: SRPT ───────────────────────────────────────────
         with tab_srpt:
@@ -646,7 +661,7 @@ def render_vehicle_log(srpt_log: list, unman_log: list, snap: dict, current_minu
             else:
                 st.dataframe(df.style.map(_status_color, subset=["Durum"]), use_container_width=True, hide_index=True)
                 csv = df.to_csv(index=False, encoding="utf-8-sig")
-                st.download_button("⬇️ CSV (SRPT)", csv, file_name="srpt_arac_log.csv", mime="text/csv")
+                st.download_button("⬇️ CSV (Adaptif)", csv, file_name="adaptif_arac_log.csv", mime="text/csv")
 
         # ── Tab 2: Algoritmasız ───────────────────────────────────
         with tab_unman:
@@ -688,17 +703,17 @@ def render_vehicle_log(srpt_log: list, unman_log: list, snap: dict, current_minu
                     "Araç ID":                sid,
                     "Model":                  sv["model_name"],
                     "Geliş":                  sv["arrival_time"],
-                    "Bekleme SRPT (dk)":      sw if sw is not None else "-",
-                    "Bekleme Alg.sız (dk)":   uw if uw is not None else "-",
-                    "Bekleme Farkı (dk)":     _diff(sw, uw),
-                    "Şarj Süresi SRPT (dk)":  sc if sc is not None else "-",
-                    "Şarj Süresi Alg.sız (dk)": uc if uc is not None else "-",
-                    "Şarj Süresi Farkı (dk)": _diff(sc, uc),
-                    "Enerji SRPT (kWh)":      se if se is not None else "-",
-                    "Enerji Alg.sız (kWh)":   ue if ue is not None else "-",
-                    "Enerji Farkı (kWh)":     _diff(se, ue),
-                    "Durum SRPT":             sv["status"],
-                    "Durum Alg.sız":          uv["status"],
+                    "Bekleme Adaptif (dk)":      sw if sw is not None else "-",
+                    "Bekleme Alg.sız (dk)":      uw if uw is not None else "-",
+                    "Bekleme Farkı (dk)":         _diff(sw, uw),
+                    "Şarj Süresi Adaptif (dk)":   sc if sc is not None else "-",
+                    "Şarj Süresi Alg.sız (dk)":   uc if uc is not None else "-",
+                    "Şarj Süresi Farkı (dk)":     _diff(sc, uc),
+                    "Enerji Adaptif (kWh)":        se if se is not None else "-",
+                    "Enerji Alg.sız (kWh)":        ue if ue is not None else "-",
+                    "Enerji Farkı (kWh)":          _diff(se, ue),
+                    "Durum Adaptif":              sv["status"],
+                    "Durum Alg.sız":              uv["status"],
                 })
 
             if not diff_rows:
@@ -730,32 +745,35 @@ def render_vehicle_log(srpt_log: list, unman_log: list, snap: dict, current_minu
                     df3.style
                     .map(_color_diff,        subset=["Bekleme Farkı (dk)", "Şarj Süresi Farkı (dk)"])
                     .map(_color_energy_diff, subset=["Enerji Farkı (kWh)"])
-                    .map(_status_color,      subset=["Durum SRPT", "Durum Alg.sız"])
+                    .map(_status_color,      subset=["Durum Adaptif", "Durum Alg.sız"])
                 )
-                st.caption("Fark = SRPT − Algoritmasız  |  🟢 negatif bekleme/şarj = SRPT daha hızlı  |  🟢 pozitif enerji = SRPT daha fazla şarj etti")
+                st.caption("Fark = Adaptif − Algoritmasız  |  🟢 negatif bekleme/şarj = Adaptif daha hızlı  |  🟢 pozitif enerji = Adaptif daha fazla şarj etti")
                 st.dataframe(styled3, use_container_width=True, hide_index=True)
                 csv3 = df3.to_csv(index=False, encoding="utf-8-sig")
                 st.download_button("⬇️ CSV (Karşılaştırma)", csv3, file_name="karsilastirma.csv", mime="text/csv")
 
 
-def render_srpt_all_decisions(snapshots: list, current_minute: int):
-    """O ana kadar verilen tüm SRPT kararlarını tablo olarak göster."""
-    with st.expander(f"📜 Tüm SRPT Karar Geçmişi  (0–{_fmt(current_minute)})", expanded=False):
+def render_adaptive_all_decisions(snapshots: list, current_minute: int):
+    """O ana kadar verilen tüm adaptif kararları tablo olarak göster."""
+    with st.expander(f"📜 Tüm Adaptif Karar Geçmişi  (0–{_fmt(current_minute)})", expanded=False):
         rows = []
         for s in snapshots[:current_minute + 1]:
-            for d in s["srpt_decisions"]:
+            for d in s["adaptive_decisions"]:
                 rows.append({
-                    "Saat":              s["time_str"],
-                    "İstasyon":          d["station_id"],
-                    "Araç":              d["session_id"],
-                    "Model":             d["model_name"],
-                    "Güç (kW)":          d["power_kw"],
-                    "SoC (%)":           d["current_soc_pct"],
-                    "Kalan (kWh)":       d["energy_needed_kwh"],
-                    "Eff. Kalan (kWh)":  d["effective_energy_kwh"],
-                    "Bekleme (dk)":      d["wait_minutes"],
-                    "Bonus":             "✓" if d["has_wait_bonus"] else "",
-                    "Bütçe Yok":         "⛔" if d["no_budget"] else "",
+                    "Saat":          s["time_str"],
+                    "İstasyon":      d["station_id"],
+                    "Araç":          d["session_id"],
+                    "Model":         d["model_name"],
+                    "Güç (kW)":      d["power_kw"],
+                    "SoC (%)":       d["current_soc_pct"],
+                    "Kalan (kWh)":   d["energy_needed_kwh"],
+                    "Tavan (kW)":    d["tapered_cap_kw"],
+                    "C-rate":        d["c_rate_actual"],
+                    "Taper Bölge":   d["taper_zone"],
+                    "Bekleme (dk)":  d["wait_minutes"],
+                    "Skor":          d["priority_score"],
+                    "Ramp":          "✓" if d["is_ramp_active"] else "",
+                    "Bütçe Yok":     "⛔" if d["no_budget"] else "",
                 })
 
         if not rows:
@@ -768,8 +786,13 @@ def render_srpt_all_decisions(snapshots: list, current_minute: int):
         def color_budget(val):
             return "color: #ef4444" if val == "⛔" else ""
 
+        def color_zone(val):
+            return {"Normal": "color: #22c55e", "Taper": "color: #f59e0b", "CC-CV": "color: #f97316"}.get(val, "")
+
         st.dataframe(
-            df.tail(300).style.map(color_budget, subset=["Bütçe Yok"]),
+            df.tail(300).style
+              .map(color_budget, subset=["Bütçe Yok"])
+              .map(color_zone,   subset=["Taper Bölge"]),
             use_container_width=True, hide_index=True,
         )
 
@@ -779,7 +802,7 @@ def render_srpt_all_decisions(snapshots: list, current_minute: int):
 # ══════════════════════════════════════════════════════════════════
 
 def main():
-    st.set_page_config(page_title="EV Şarj — SRPT", layout="wide", initial_sidebar_state="expanded")
+    st.set_page_config(page_title="EV Şarj — Adaptif", layout="wide", initial_sidebar_state="expanded")
 
     st.markdown("""
     <style>
@@ -802,7 +825,7 @@ def main():
 
     # ── Sidebar ──────────────────────────────────────────────────
     with st.sidebar:
-        st.markdown("## ⚡ SRPT Simülasyonu")
+        st.markdown("## ⚡ Adaptif Simülasyon")
         st.divider()
 
         scenario_label = st.selectbox("Senaryo", list(SCENARIO_MAP.keys()))
@@ -810,7 +833,7 @@ def main():
         generate_new   = st.checkbox("Yeni rastgele veri üret", value=False)
 
         if st.button("🔄 Simülasyonu Hazırla", use_container_width=True, type="primary"):
-            with st.spinner("Simülasyon çalışıyor (SRPT + Algoritmasız)..."):
+            with st.spinner("Simülasyon çalışıyor (Adaptif + Algoritmasız)..."):
                 try:
                     snaps, unman, vlog, uvlog = load_and_simulate(scenario_key, generate_new)
                     st.session_state.snapshots      = snaps
@@ -870,12 +893,17 @@ def main():
                 st.session_state.last_frame_time = None
 
         st.divider()
-        st.markdown("**Algoritma:** SRPT  \n*En az kalan enerjili araç önce.*  \n*15 dk+ bekleyene bekleme bonusu.*")
+        st.markdown(
+            "**Algoritma:** Adaptif SoC  \n"
+            "*Trafo:* Soft ramp (30 dk) + look-ahead  \n"
+            "*Batarya:* C-rate ≤1.5C, SoC taper  \n"
+            "*Öncelik:* (bekleme/enerji) × C-rate headroom"
+        )
 
     # ── İçerik yok ───────────────────────────────────────────────
     if st.session_state.snapshots is None:
         st.markdown(
-            "<h2 style='color:#60a5fa;text-align:center;margin-top:80px'>⚡ EV Yük Dengeleme — SRPT</h2>"
+            "<h2 style='color:#60a5fa;text-align:center;margin-top:80px'>⚡ EV Yük Dengeleme — Adaptif</h2>"
             "<p style='color:#64748b;text-align:center'>Sol menüden senaryo seçin ve <b>Simülasyonu Hazırla</b> butonuna basın.</p>",
             unsafe_allow_html=True,
         )
@@ -888,16 +916,23 @@ def main():
     last_snp = st.session_state.snapshots[-1]
 
     # ── Başlık ───────────────────────────────────────────────────
-    peak_html = (
-        '<span style="background:#92400e;color:#fef3c7;padding:3px 12px;border-radius:6px;'
-        'font-size:0.75em;margin-left:10px;">⚠️ PİK SAAT (17:00–22:00)</span>'
-        if snap["is_peak"] else ""
-    )
+    if snap["is_peak"]:
+        peak_html = (
+            '<span style="background:#92400e;color:#fef3c7;padding:3px 12px;border-radius:6px;'
+            'font-size:0.75em;margin-left:10px;">⚠️ PİK SAAT — Limit Kısıtlı</span>'
+        )
+    elif snap.get("is_ramp"):
+        peak_html = (
+            '<span style="background:#44403c;color:#fde68a;padding:3px 12px;border-radius:6px;'
+            'font-size:0.75em;margin-left:10px;">📉 SOFT RAMP — Limit Lineer Düşüyor</span>'
+        )
+    else:
+        peak_html = ""
     pct = int(snap["total_power_kw"] / snap["grid_limit_kw"] * 100) if snap["grid_limit_kw"] > 0 else 0
 
     st.markdown(
         f'<div style="padding:8px 0 6px;border-bottom:1px solid #1e293b;margin-bottom:12px;">'
-        f'<span style="font-size:1.4em;font-weight:700;color:#e2e8f0;">⚡ EV Şarj — SRPT</span>&nbsp;&nbsp;'
+        f'<span style="font-size:1.4em;font-weight:700;color:#e2e8f0;">⚡ EV Şarj — Adaptif</span>&nbsp;&nbsp;'
         f'<span style="font-size:1.9em;font-weight:900;color:#60a5fa;font-variant-numeric:tabular-nums;">'
         f'🕐 {snap["time_str"]}</span>'
         f'<span style="color:#475569;font-size:0.8em;margin-left:8px;">({snap["minute"]} / 1439 dk)</span>'
@@ -930,8 +965,8 @@ def main():
     st.markdown(
         f'<div style="background:#0f1f12;border:1px solid #166534;border-radius:8px;'
         f'padding:10px 16px;margin-bottom:12px;font-size:0.85em;color:#bbf7d0;">'
-        f'<b>📊 SRPT vs Algoritmasız (Gün Sonu Tahmini):</b>&nbsp;&nbsp;'
-        f'Toplam Enerji: <b>SRPT {srpt_final:.1f}</b> / Alg.sız {unman_total:.1f} kWh '
+        f'<b>📊 Adaptif vs Algoritmasız (Gün Sonu Tahmini):</b>&nbsp;&nbsp;'
+        f'Toplam Enerji: <b>Adaptif {srpt_final:.1f}</b> / Alg.sız {unman_total:.1f} kWh '
         f'<span style="color:{"#22c55e" if diff_energy >= 0 else "#ef4444"}">'
         f'({"+" if diff_energy >= 0 else ""}{diff_energy:.1f} kWh)</span>'
         f'&nbsp;|&nbsp; Aşım Azalması: <b style="color:#22c55e">-{diff_over} dk</b>'
@@ -962,7 +997,7 @@ def main():
             "modeBarButtonsToRemove": ["lasso2d", "select2d", "autoScale2d"],
         })
     with col_srpt:
-        render_srpt_decisions(snap["srpt_decisions"])
+        render_adaptive_decisions(snap["adaptive_decisions"])
 
     # ── Kuyruk ───────────────────────────────────────────────────
     if snap["queue"]:
@@ -984,7 +1019,7 @@ def main():
     # ── Araç logları + SRPT geçmişi ───────────────────────────────
     if vlog and uvlog:
         render_vehicle_log(vlog, uvlog, snap, snap["minute"])
-    render_srpt_all_decisions(st.session_state.snapshots, snap["minute"])
+    render_adaptive_all_decisions(st.session_state.snapshots, snap["minute"])
 
     # ── Animasyon ─────────────────────────────────────────────────
     if st.session_state.running:

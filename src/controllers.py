@@ -373,6 +373,227 @@ class DynamicFairController:
         self.limit_log.append(limit)
 
 
+class DynamicPeakDetector:
+    """
+    Trafo doluluk yüzdesi ve delta-T'ye bakarak peak'in yaklaştığını dinamik olarak algılar.
+
+    Mantık:
+      load_pct   = son_toplam_güç / trafo_max_kw × 100
+      delta_kw   = (son_güç - WINDOW dk önceki güç) / WINDOW  [kW/dk]
+
+      Koşul 1 — Yüksek yük   : load_pct ≥ LOAD_HIGH_PCT  → kesin peak mod
+      Koşul 2 — Yükselen yük : load_pct ≥ LOAD_MID_PCT AND delta_kw ≥ DELTA_THRESH → peak yaklaşıyor
+
+    Dönen değer:
+      (is_peak: bool, load_pct: float, delta_kw: float)
+    """
+
+    WINDOW       = 15    # dk — trend hesabı için geriye bakış penceresi
+    LOAD_HIGH_PCT = 75.0  # %  — bu eşiği geçerse kesin peak mod
+    LOAD_MID_PCT  = 55.0  # %  — bu eşik + yükselen trend → peak mod
+    DELTA_THRESH  = 4.0   # kW/dk — yükselme hızı eşiği
+
+    def __init__(self, trafo_max_kw: float):
+        self.trafo_max_kw = trafo_max_kw
+        self._history: List[float] = []   # dakika bazlı toplam güç geçmişi
+
+    def update(self, total_power_kw: float):
+        """Her adımda çağrılır; güç geçmişini tutar."""
+        self._history.append(total_power_kw)
+
+    def detect(self, current_bg_kw: float) -> tuple:
+        """
+        Mevcut yük durumuna göre (load_pct, delta_kw, is_peak) döndürür.
+        power_log dolmamışsa bg_load ile çalışır.
+        """
+        if len(self._history) >= 2:
+            recent = self._history[-1]
+            window = min(self.WINDOW, len(self._history) - 1)
+            past   = self._history[-1 - window]
+            delta_kw = (recent - past) / window
+        else:
+            recent   = current_bg_kw
+            delta_kw = 0.0
+
+        load_pct = recent / self.trafo_max_kw * 100.0
+
+        is_high_load   = load_pct >= self.LOAD_HIGH_PCT
+        is_rising_fast = (load_pct >= self.LOAD_MID_PCT and delta_kw >= self.DELTA_THRESH)
+        is_peak        = is_high_load or is_rising_fast
+
+        return is_peak, load_pct, delta_kw
+
+
+class AdaptiveSoCController:
+    """
+    Trafo + Batarya Sağlığı Optimal Kontrolcü.
+
+    Trafo koruması:
+    - Soft peak ramp   : pik başlamadan 30 dk önce limit lineer düşer.
+    - Look-ahead tampon: sonraki 5 dk'nın max baz yükünü kullan.
+    - 20 kW sabit güvenlik payı.
+    - Dinamik peak tespiti: trafo doluluk % ve delta-T'ye bakarak
+      saat bağımsız biçimde peak moduna geçer (DynamicPeakDetector).
+
+    Batarya sağlığı:
+    - C-rate ≤ 1.5C  (endüstri standardı; degradasyonu minimize eder).
+    - SoC taper — CC-CV eğrisi:
+        SoC < %50  → tam güç  (×1.00)
+        %50 – %70  → kademeli azalma (×1.00 → ×0.70)
+        %70 – %80  → CC-CV bölgesi  (×0.70 → ×0.20)
+
+    Öncelik ve dağıtım:
+    - Skor = (bekleme / kalan_enerji) × c_rate_headroom
+    - Orantılı water-filling: taşan bütçe diğer araçlara yeniden dağıtılır.
+    """
+
+    RAMP_MINUTES = 30
+    LOOKAHEAD    = 5
+    SAFETY_KW    = 20.0
+    MAX_C_RATE   = 1.5
+
+    def __init__(self, stations, limit_policy, bg_load):
+        self.stations     = stations
+        self.policy       = limit_policy
+        self.bg_load      = bg_load
+        self.queue        = []
+        self.power_log    = []
+        self.limit_log    = []
+        self.completed    = []
+        self.timeline_log = []
+        self._peak_det    = DynamicPeakDetector(limit_policy.trafo_max_kw)
+
+    def compute_limit(self, minute: int) -> float:
+        """
+        Limit şu üç katmandan hesaplanır (hangisi daha kısıtlayıcıysa o geçer):
+          1. Statik peak penceresi       → evening_peak_kw
+          2. Soft ramp (pik öncesi 30dk) → lineer geçiş
+          3. Dinamik peak tespiti        → load_pct / delta-T'ye göre kısıtlama
+        """
+        tod        = minute % 1440
+        ramp_start = max(0, self.policy.peak_start_min - self.RAMP_MINUTES)
+
+        # ── Katman 1: statik peak penceresi ──────────────────────────────────
+        if self.policy.peak_start_min <= tod < self.policy.peak_end_min:
+            return self.policy.evening_peak_kw
+
+        # ── Katman 2: soft ramp ───────────────────────────────────────────────
+        if ramp_start <= tod < self.policy.peak_start_min:
+            progress = (tod - ramp_start) / self.RAMP_MINUTES
+            static_limit = self.policy.trafo_max_kw - progress * (
+                self.policy.trafo_max_kw - self.policy.evening_peak_kw
+            )
+        else:
+            static_limit = self.policy.trafo_max_kw
+
+        # ── Katman 3: dinamik peak tespiti ───────────────────────────────────
+        is_dyn_peak, load_pct, delta_kw = self._peak_det.detect(self.bg_load[minute])
+
+        if is_dyn_peak:
+            det = self._peak_det
+            if load_pct >= det.LOAD_HIGH_PCT:
+                # Yük zaten yüksek → sert sınır
+                dyn_limit = self.policy.evening_peak_kw
+            else:
+                # Yük orta ama yükseliyor → lineer interpolasyon
+                t = (load_pct - det.LOAD_MID_PCT) / (det.LOAD_HIGH_PCT - det.LOAD_MID_PCT)
+                t = max(0.0, min(1.0, t))
+                dyn_limit = self.policy.trafo_max_kw - t * (
+                    self.policy.trafo_max_kw - self.policy.evening_peak_kw
+                )
+            # En kısıtlayıcı limiti seç
+            return min(static_limit, dyn_limit)
+
+        return static_limit
+
+    def soc_tapered_power(self, ev, station_max_kw: float) -> float:
+        """C-rate limitli, SoC'a göre kademeli güç tavanı (CC-CV eğrisi)."""
+        c_rate_limit = ev.battery_capacity_kwh * self.MAX_C_RATE
+        soc = ev.current_soc
+        if soc < 0.50:
+            taper = 1.0
+        elif soc < 0.70:
+            taper = 1.0 - 0.30 * ((soc - 0.50) / 0.20)   # 1.0 → 0.70
+        else:
+            taper = 0.70 - 0.50 * ((soc - 0.70) / 0.10)  # 0.70 → 0.20
+        return min(station_max_kw, c_rate_limit, ev.max_dc_power_kw) * max(taper, 0.05)
+
+    def allocate_power(self, minute: int) -> Dict[str, float]:
+        limit       = self.compute_limit(minute)
+        end_idx     = min(minute + self.LOOKAHEAD, 1439)
+        future_base = float(np.max(self.bg_load[minute: end_idx + 1]))
+
+        active = [s for s in self.stations if s.current_ev and not s.current_ev.is_satisfied]
+        allocs = {s.station_id: 0.0 for s in self.stations}
+        if not active:
+            return allocs
+
+        budget = max(0.0, limit - future_base - self.SAFETY_KW)
+        caps   = {s.station_id: self.soc_tapered_power(s.current_ev, s.max_power_kw) for s in active}
+
+        def score(s):
+            ev              = s.current_ev
+            wait            = minute - ev.arrival_minute + 1
+            energy          = max(ev.energy_needed_kwh, 0.01)
+            c_rate_headroom = max(0.1, self.MAX_C_RATE - (
+                ev.energy_delivered_kwh / max(ev.battery_capacity_kwh, 0.1)
+            ))
+            return (wait / energy) * c_rate_headroom
+
+        pending = list(active)
+        while budget > 0.01 and pending:
+            scores      = {s.station_id: score(s) for s in pending}
+            total_score = sum(scores.values())
+            if total_score <= 0:
+                break
+            overflow    = 0.0
+            new_pending = []
+            for s in pending:
+                proportion    = scores[s.station_id] / total_score
+                want          = budget * proportion
+                remaining_cap = caps[s.station_id] - allocs[s.station_id]
+                if want >= remaining_cap:
+                    allocs[s.station_id] += remaining_cap
+                    overflow += want - remaining_cap
+                else:
+                    allocs[s.station_id] += want
+                    new_pending.append(s)
+            if not new_pending or overflow < 0.01:
+                break
+            budget  = overflow
+            pending = new_pending
+
+        return allocs
+
+    def step(self, minute: int):
+        for s in self.stations:
+            if not s.current_ev and self.queue:
+                s.current_ev = self.queue.pop(0)
+                s.current_ev.charge_start_minute = minute
+
+        limit  = self.compute_limit(minute)
+        allocs = self.allocate_power(minute)
+
+        for ev in self.queue:
+            self.timeline_log.append({"Dakika": minute, "Araç ID": ev.session_id, "Durum": "Kuyrukta", "İstasyon": "-", "BazGüç (kW)": round(self.bg_load[minute], 1)})
+        for s in self.stations:
+            if s.current_ev:
+                self.timeline_log.append({"Dakika": minute, "Araç ID": s.current_ev.session_id, "Durum": "Şarjda", "İstasyon": s.station_id, "Güç (kW)": round(allocs[s.station_id], 1), "SoC (%)": round(s.current_ev.current_soc * 100, 1), "BazGüç (kW)": round(self.bg_load[minute], 1)})
+
+        for s in self.stations:
+            if s.current_ev:
+                s.current_ev.apply_power(allocs[s.station_id], minute)
+                if s.current_ev.is_satisfied:
+                    s.current_ev.departure_minute = minute
+                    self.completed.append(s.current_ev)
+                    s.current_ev = None
+
+        total_power = self.bg_load[minute] + sum(allocs.values())
+        self.power_log.append(total_power)
+        self.limit_log.append(limit)
+        self._peak_det.update(total_power)   # dinamik dedektörü güncelle
+
+
 class Simulation:
     def __init__(self, ctrl, schedule):
         self.ctrl = ctrl
