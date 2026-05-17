@@ -532,15 +532,24 @@ class AdaptiveSoCController:
         return static_limit
 
     def soc_tapered_power(self, ev, station_max_kw: float) -> float:
-        """C-rate limitli, SoC'a göre kademeli güç tavanı (CC-CV eğrisi)."""
+        """C-rate limitli, SoC'a göre kademeli güç tavanı (CC-CV eğrisi).
+
+        Dört segment:
+          SoC < 0.50            → tam güç (1.0)
+          0.50 ≤ SoC < 0.70    → 1.0 → 0.70  (hafif taper)
+          0.70 ≤ SoC < 0.80    → 0.70 → 0.20  (CC-CV geçiş)
+          0.80 ≤ SoC ≤ 1.00    → 0.20 → 0.05  (CV bölgesi, gradual)
+        """
         c_rate_limit = ev.battery_capacity_kwh * self.MAX_C_RATE
         soc = ev.current_soc
         if soc < 0.50:
             taper = 1.0
         elif soc < 0.70:
             taper = 1.0 - 0.30 * ((soc - 0.50) / 0.20)   # 1.0 → 0.70
-        else:
+        elif soc < 0.80:
             taper = 0.70 - 0.50 * ((soc - 0.70) / 0.10)  # 0.70 → 0.20
+        else:
+            taper = 0.20 - 0.15 * ((soc - 0.80) / 0.20)  # 0.20 → 0.05
         return min(station_max_kw, c_rate_limit, ev.max_dc_power_kw) * max(taper, 0.05)
 
     def allocate_power(self, minute: int) -> Dict[str, float]:
@@ -551,6 +560,7 @@ class AdaptiveSoCController:
         active = [s for s in self.stations if s.current_ev and not s.current_ev.is_satisfied]
         allocs = {s.station_id: 0.0 for s in self.stations}
         if not active:
+            self._prev_ev_load = 0.0   # ramp limiter için sıfırla (erken dönüşte stale kalıyordu)
             return allocs
 
         safety = self.SAFETY_KW_THERMAL if self._thermal_active else self.SAFETY_KW
@@ -561,9 +571,8 @@ class AdaptiveSoCController:
             ev              = s.current_ev
             wait            = minute - ev.arrival_minute + 1
             energy          = max(ev.energy_needed_kwh, 0.01)
-            c_rate_headroom = max(0.1, self.MAX_C_RATE - (
-                ev.energy_delivered_kwh / max(ev.battery_capacity_kwh, 0.1)
-            ))
+            # SoC bazlı C-rate headroom: düşük SoC → daha fazla akım kabul kapasitesi
+            c_rate_headroom = max(0.1, self.MAX_C_RATE * (1.0 - ev.current_soc))
             base_score = (wait / energy) * c_rate_headroom
 
             if not self.use_aging_cost:

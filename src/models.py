@@ -169,7 +169,11 @@ class DynamicGridLimitPolicy(GridLimitPolicy):
         else:
             p_max = K_max * self._s_rated
             p_max = min(p_max, self._hard_ceiling)
-            p_max = max(p_max, bg_load_kw + self._hard_floor_base)
+            # Floor: en az bir soket açık kalabilsin; ancak trafo nominal kapasitesini
+            # (s_rated_kw) aşmaz — yüksek baz yük dönemlerinde floor'un aşıma
+            # yol açmasını engeller (stres testi senaryosu).
+            floor = min(bg_load_kw + self._hard_floor_base, self._s_rated)
+            p_max = max(p_max, floor)
 
         return p_max
 

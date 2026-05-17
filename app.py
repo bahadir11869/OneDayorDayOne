@@ -268,8 +268,14 @@ def build_snapshots(schedule: dict, bg_load: np.ndarray, config: ScenarioConfig)
 # ══════════════════════════════════════════════════════════════════
 
 def run_unmanaged(schedule: dict, bg_load: np.ndarray, config: ScenarioConfig) -> dict:
-    """Algoritmasız simülasyon — güç profili + araç logu + batarya sıcaklık logu döner."""
-    policy           = config.to_grid_limit_policy()
+    """Algoritmasız simülasyon — güç profili + araç logu + termal log döner.
+
+    Termal model (DynamicGridLimitPolicy) adaptif simülasyonla aynı parametrelerle
+    çalışır; fark sadece güç dağıtımında — algortimasız kısım max güçle şarj eder,
+    termal model ise pasif olarak kaydeder (limiti uygulamaz).
+    """
+    # Termal model — adaptif ile aynı policy parametreleri (adil karşılaştırma)
+    policy           = config.to_grid_limit_policy(use_dynamic=True, theta_hs_target=98.0)
     stations         = copy.deepcopy(config.layout.stations)
     ctrl             = UnmanagedController(stations, policy, bg_load)
     vehicle_events: dict = {}
@@ -313,10 +319,11 @@ def run_unmanaged(schedule: dict, bg_load: np.ndarray, config: ScenarioConfig) -
         bg      = float(bg_load[minute])
         allocs  = {s.station_id: s.effective_max_power_kw() for s in ctrl.stations}
 
-        # Batarya sıcaklığını güncelle (25°C sabit ortam — algoritmasız trafo yok)
+        # Batarya sıcaklığını güncelle — adaptif ile aynı ortam profili (adil karşılaştırma)
+        ambient_temp_u = policy._ambient_temp(minute)
         for s in ctrl.stations:
             if s.current_ev:
-                s.current_ev.update_battery_temp(25.0, allocs[s.station_id])
+                s.current_ev.update_battery_temp(ambient_temp_u, allocs[s.station_id])
                 sid = s.current_ev.session_id
                 if sid not in vehicle_temp_log:
                     vehicle_temp_log[sid] = []
@@ -347,6 +354,9 @@ def run_unmanaged(schedule: dict, bg_load: np.ndarray, config: ScenarioConfig) -
         ctrl.power_log.append(bg + ev_load)
         ctrl.limit_log.append(limit)
 
+        # Termal modeli güncelle (pasif — limit uygulanmıyor, sadece θ_hs/V(t) izleniyor)
+        policy.update(minute, bg + ev_load)
+
     for s in ctrl.stations:
         if s.current_ev:
             ev  = s.current_ev
@@ -369,14 +379,23 @@ def run_unmanaged(schedule: dict, bg_load: np.ndarray, config: ScenarioConfig) -
     lim  = np.array(ctrl.limit_log)
     over = p > lim
     return {
-        "power_log":        [round(float(v), 1) for v in p],
-        "completed_count":  int(len(ctrl.completed)),
-        "overload_minutes": int(over.sum()),
-        "total_energy":     round(float(sum(e.energy_delivered_kwh for e in ctrl.completed)), 1),
-        "avg_wait":         round(float(np.mean([e.wait_time_minutes for e in ctrl.completed])) if ctrl.completed else 0.0, 1),
-        "peak_power":       round(float(p.max()), 1),
-        "vehicle_log":      sorted(vehicle_events.values(), key=lambda x: x["arrival_minute"]),
-        "vehicle_temp_log": vehicle_temp_log,
+        "power_log":             [round(float(v), 1) for v in p],
+        "completed_count":       int(len(ctrl.completed)),
+        "overload_minutes":      int(over.sum()),
+        "total_energy":          round(float(sum(e.energy_delivered_kwh for e in ctrl.completed)), 1),
+        "avg_wait":              round(float(np.mean([e.wait_time_minutes for e in ctrl.completed])) if ctrl.completed else 0.0, 1),
+        "peak_power":            round(float(p.max()), 1),
+        "vehicle_log":           sorted(vehicle_events.values(), key=lambda x: x["arrival_minute"]),
+        "vehicle_temp_log":      vehicle_temp_log,
+        # Termal model logları (adaptif ile karşılaştırılabilir)
+        "theta_hs_log":          policy.theta_hs_log,
+        "theta_oil_log":         policy.theta_oil_log,
+        "aging_rate_log":        policy.aging_rate_log,
+        "dielectric_stress_log": policy.dielectric_stress_log,
+        "peak_hotspot":          round(float(policy.peak_hotspot), 2),
+        "aging_integral":        round(float(policy.aging_integral), 5),
+        "trafo_max_kw":          round(float(policy.trafo_max_kw), 1),
+        "s_rated_kw":            round(float(policy._s_rated), 1),
     }
 
 
@@ -400,13 +419,27 @@ SCENARIO_MAP = {
 DATASET_FILE = os.path.join(os.path.dirname(__file__), "DATASET", "dataset.json")
 
 
-def load_and_simulate(scenario_key: str, generate_new: bool):
+def load_and_simulate(scenario_key: str, generate_new: bool, ev_count_override: int = 0):
     scenario_fn = getattr(Scenarios, scenario_key)
     config: ScenarioConfig = scenario_fn()
+
+    # Araç sayısı override — 0 ise senaryo varsayılanı kullanılır
+    if ev_count_override > 0:
+        config.fleet.daily_ev_count = ev_count_override
+        generate_new = True  # Araç sayısı değiştiğinde mutlaka yeni veri üret
 
     if not generate_new and os.path.exists(DATASET_FILE):
         with open(DATASET_FILE, "r") as f:
             data = json.load(f)
+        # Senaryo değiştiyse cache'i yenile — farklı araç sayısı/profili olabilir
+        if data.get("scenario") != config.name:
+            generate_new = True
+
+    if generate_new or not os.path.exists(DATASET_FILE):
+        rng      = np.random.default_rng(42)
+        schedule = ArrivalGenerator(config.fleet).generate_arrivals(rng)
+        bg_load  = BackgroundLoadGenerator.generate(np.random.default_rng(101), config.environment)
+    else:
         schedule: dict = {}
         for v in data["vehicles"]:
             m = v["arrival_minute"]
@@ -416,10 +449,6 @@ def load_and_simulate(scenario_key: str, generate_new: bool):
                 m, v["initial_soc"], target_soc=config.fleet.target_soc,
             ))
         bg_load = np.array(data["background_load_profile"])
-    else:
-        rng      = np.random.default_rng(42)
-        schedule = ArrivalGenerator(config.fleet).generate_arrivals(rng)
-        bg_load  = BackgroundLoadGenerator.generate(np.random.default_rng(101), config.environment)
 
     srpt_snaps, srpt_vlog, srpt_temp_log = build_snapshots(copy.deepcopy(schedule), bg_load, config)
     unmanaged                             = run_unmanaged(copy.deepcopy(schedule), bg_load, config)
@@ -530,13 +559,24 @@ def render_power_chart(snapshots: list, unmanaged: dict, current_minute: int) ->
 
     fig = go.Figure()
 
-    # ── Grid Limiti (tüm gün) ──
+    # ── Dinamik Termal Limit (adaptif θ_hs modeline göre değişir) ──
     fig.add_trace(go.Scatter(
         x=all_times, y=limit_full,
-        name="Grid Limiti",
+        name="Dinamik Limit",
         line=dict(color="#ef4444", width=2, dash="dash"),
-        hovertemplate="%{y:.0f} kW<extra>Grid Limiti</extra>",
+        hovertemplate="%{y:.0f} kW<extra>Dinamik Limit</extra>",
     ))
+
+    # ── Statik Trafo Nominal Limiti (güvenlik marjinli, referans) ──
+    trafo_max_kw = unmanaged.get("trafo_max_kw")
+    if trafo_max_kw:
+        fig.add_hline(
+            y=trafo_max_kw,
+            line_color="#64748b", line_dash="dot", line_width=1.2,
+            annotation_text=f"Nominal {trafo_max_kw:.0f} kW",
+            annotation_font_color="#64748b",
+            annotation_position="top left",
+        )
 
     # ── Algoritmasız toplam ──
     if n > 1:
@@ -1039,15 +1079,12 @@ def render_lifetime_chart(snapshots: list, unmanaged: dict) -> go.Figure:
         acc += v / 1440.0
         trafo_cum_algo.append(acc)
 
-    # Algoritmasız — trafo termal model yok, V(t)=1.0 varsayıyoruz (hiç kısıtlama yok)
-    # Güç profili kullanarak yaklaşık K ve V(t) hesapla
-    p_log = unmanaged["power_log"]
+    # Algoritmasız — run_unmanaged()'dan gelen gerçek IEC termal model V(t) logu
+    aging_rate_log_u = unmanaged.get("aging_rate_log", [])
     trafo_cum_unman = []
     acc2 = 0.0
-    for p in p_log:
-        K = p / max(unmanaged.get("trafo_rated_kw", p + 1), 1.0)
-        v_approx = 2.0 ** (((K * 80.0) - 98.0) / 6.0)  # rough θ_hs approx
-        acc2 += max(0.0, v_approx) / 1440.0
+    for v in aging_rate_log_u:
+        acc2 += v / 1440.0
         trafo_cum_unman.append(acc2)
 
     fig = go.Figure()
@@ -1239,11 +1276,11 @@ def render_best_worst_panel(snapshots: list, unmanaged: dict,
     st.markdown("### 🏆 En İyi / En Kötü Sonuçlar")
 
     # ── Trafo ─────────────────────────────────────────────────────
-    theta_hs_log = [s["theta_hs"] for s in snapshots]
-    peak_ths     = max(theta_hs_log) if theta_hs_log else 0.0
-    peak_ths_min = theta_hs_log.index(peak_ths) if theta_hs_log else 0
-    aging_total  = snapshots[-1]["aging_rate"] if snapshots else 0.0  # V(t) son değer
-    aging_int    = sum(s["aging_rate"] for s in snapshots) / 1440.0
+    theta_hs_log    = [s["theta_hs"] for s in snapshots]
+    peak_ths        = max(theta_hs_log) if theta_hs_log else 0.0
+    peak_ths_min    = theta_hs_log.index(peak_ths) if theta_hs_log else 0
+    aging_int       = sum(s["aging_rate"] for s in snapshots) / 1440.0
+    peak_power_algo = max((s["total_power_kw"] for s in snapshots), default=0.0)
 
     # Unmanaged power profili aşımı
     p_arr    = np.array(unmanaged["power_log"])
@@ -1256,16 +1293,21 @@ def render_best_worst_panel(snapshots: list, unmanaged: dict,
         st.markdown(
             f'<div style="background:#0d1b2a;border:1px solid #1e3a5f;border-radius:8px;padding:12px;">'
             f'<b style="color:{col1}">θ_hs Pik: {peak_ths:.1f}°C</b> @ {_fmt(peak_ths_min)}<br>'
+            f'Pik Güç: <b>{peak_power_algo:.0f} kW</b><br>'
             f'V(t) Günlük İntegral: <b>{aging_int:.4f}</b><br>'
             f'Aşım Süresi: <b>{snapshots[-1]["overload_total_minutes"] if snapshots else 0} dk</b>'
             f'</div>', unsafe_allow_html=True)
     with cb:
         st.markdown("#### 🔌 Trafo — Algoritmasız")
+        u_peak_ths  = round(float(unmanaged.get("peak_hotspot", 0.0)), 1)
+        u_aging_int = round(sum(unmanaged.get("aging_rate_log", [])) / 1440.0, 4)
+        u_ths_col   = "#ef4444" if u_peak_ths >= 98 else ("#f59e0b" if u_peak_ths >= 90 else "#22c55e")
         st.markdown(
             f'<div style="background:#1a0d0d;border:1px solid #7f1d1d;border-radius:8px;padding:12px;">'
             f'<b style="color:#ef4444">Pik Güç: {peak_p_u:.0f} kW</b><br>'
-            f'Aşım Süresi: <b>{unmanaged["overload_minutes"]} dk</b><br>'
-            f'<span style="color:#94a3b8">Termal model yok — V(t) hesaplanamaz</span>'
+            f'<b style="color:{u_ths_col}">θ_hs Pik: {u_peak_ths:.1f}°C</b><br>'
+            f'V(t) Günlük İntegral: <b>{u_aging_int:.4f}</b><br>'
+            f'Aşım Süresi: <b>{unmanaged["overload_minutes"]} dk</b>'
             f'</div>', unsafe_allow_html=True)
 
     st.markdown("---")
@@ -1287,18 +1329,36 @@ def render_best_worst_panel(snapshots: list, unmanaged: dict,
     hot_a, cool_a, mdeg_a, ldeg_a = _bat_stats(vehicle_log_algo)
     hot_u, cool_u, mdeg_u, ldeg_u = _bat_stats(vehicle_log_unman)
 
+    # Adaptif maks/min şarj süreleri (tamamlanan + yarım kalan araçlar)
+    _charged_a = [v for v in vehicle_log_algo
+                  if isinstance(v.get("charge_minutes"), (int, float)) and v["charge_minutes"] > 0]
+    _max_chg_a = max(_charged_a, key=lambda v: v["charge_minutes"]) if _charged_a else None
+    _min_chg_a = min(_charged_a, key=lambda v: v["charge_minutes"]) if _charged_a else None
+
     cc1, cc2 = st.columns(2)
     with cc1:
         st.markdown("#### 🔋 Batarya — Adaptif")
         if hot_a:
-            total_a = (mdeg_a.get("elec_deg_integral") or 0) + (mdeg_a.get("mech_stress_integral") or 0)
+            total_a  = (mdeg_a.get("elec_deg_integral") or 0) + (mdeg_a.get("mech_stress_integral") or 0)
             total_la = (ldeg_a.get("elec_deg_integral") or 0) + (ldeg_a.get("mech_stress_integral") or 0)
+            max_chg_line = (
+                f'⏱ <b>En uzun şarj:</b> {_max_chg_a["session_id"]} ({_max_chg_a["model_name"]}) — '
+                f'<span style="color:#f97316">{int(_max_chg_a["charge_minutes"])} dk</span><br>'
+                if _max_chg_a else ""
+            )
+            min_chg_line = (
+                f'⚡ <b>En kısa şarj:</b> {_min_chg_a["session_id"]} ({_min_chg_a["model_name"]}) — '
+                f'<span style="color:#22c55e">{int(_min_chg_a["charge_minutes"])} dk</span><br>'
+                if _min_chg_a else ""
+            )
             st.markdown(
                 f'<div style="background:#0d1b2a;border:1px solid #1e3a5f;border-radius:8px;padding:12px;font-size:0.83em;">'
                 f'🌡 <b>En sıcak:</b> {hot_a["session_id"]} ({hot_a["model_name"]}) — <span style="color:#f97316">{hot_a["peak_bat_temp_c"]:.1f}°C</span><br>'
                 f'❄️ <b>En serin:</b> {cool_a["session_id"]} ({cool_a["model_name"]}) — <span style="color:#22c55e">{cool_a["peak_bat_temp_c"]:.1f}°C</span><br>'
                 f'⚠️ <b>En fazla ömür:</b> {mdeg_a["session_id"]} — <span style="color:#ef4444">{total_a:.5f}</span><br>'
-                f'✅ <b>En az ömür:</b> {ldeg_a["session_id"]} — <span style="color:#22c55e">{total_la:.5f}</span>'
+                f'✅ <b>En az ömür:</b> {ldeg_a["session_id"]} — <span style="color:#22c55e">{total_la:.5f}</span><br>'
+                f'<hr style="border-color:#1e3a5f;margin:6px 0;">'
+                f'{max_chg_line}{min_chg_line}'
                 f'</div>', unsafe_allow_html=True)
     with cc2:
         st.markdown("#### 🔋 Batarya — Algoritmasız")
@@ -1350,10 +1410,21 @@ def main():
         scenario_key   = SCENARIO_MAP[scenario_label]
         generate_new   = st.checkbox("Yeni rastgele veri üret", value=False)
 
+        default_count  = getattr(getattr(Scenarios, scenario_key)().fleet, "daily_ev_count", 35)
+        ev_count_input = st.number_input(
+            "Araç sayısı",
+            min_value=1, max_value=300, value=default_count, step=5,
+            key="ev_count_input",
+            help="Senaryo varsayılanını değiştirmek için düzenleyin — otomatik olarak yeni dataset üretilir.",
+        )
+
         if st.button("🔄 Simülasyonu Hazırla", use_container_width=True, type="primary"):
             with st.spinner("Simülasyon çalışıyor (Adaptif + Algoritmasız)..."):
                 try:
-                    snaps, unman, vlog, uvlog, stl = load_and_simulate(scenario_key, generate_new)
+                    _ev_override = int(ev_count_input) if int(ev_count_input) != default_count else 0
+                    snaps, unman, vlog, uvlog, stl = load_and_simulate(
+                        scenario_key, generate_new, ev_count_override=_ev_override
+                    )
                     st.session_state.snapshots      = snaps
                     st.session_state.unmanaged      = unman
                     st.session_state.vehicle_log    = vlog
