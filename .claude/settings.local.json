@@ -5,7 +5,14 @@
       "Bash(python3)",
       "Bash(python simulation_v3.py)",
       "Bash(python3 -c ' *)",
-      "Bash(python *)"
+      "Bash(python *)",
+      "Bash(pip install *)",
+      "Bash(streamlit run *)",
+      "Bash(curl -s http://localhost:8501)",
+      "Bash(curl -s http://localhost:8502)",
+      "Bash(mkdir -p ~/.streamlit)",
+      "Bash(cat)",
+      "Bash(echo \"EXIT:$?\")"
     ]
   }
 }
