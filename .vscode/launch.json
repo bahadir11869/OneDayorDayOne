@@ -1,0 +1,65 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "simulation.py argumansiz",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/src/simulation.py",
+            "cwd": "${workspaceFolder}/src",
+            "console": "integratedTerminal",
+            "justMyCode": true
+        },
+        {
+            "name": "simulation.py (avm_medium)",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/src/simulation.py",
+            "args": [
+                "--scenario", "avm_medium"
+            ],
+            "cwd": "${workspaceFolder}/src",
+            "console": "integratedTerminal",
+            "justMyCode": true
+        },
+        {
+            "name": "simulation.py (generate-new)",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/src/simulation.py",
+            "args": [
+                "--generate-new",
+                "--scenario", "avm_medium"
+            ],
+            "cwd": "${workspaceFolder}/src",
+            "console": "integratedTerminal",
+            "justMyCode": true
+        },
+        {
+            "name": "simulation.py (scenario-file)",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/src/simulation.py",
+            "args": [
+                "--scenario-file", "${workspaceFolder}/scenario.json"
+            ],
+            "cwd": "${workspaceFolder}/src",
+            "console": "integratedTerminal",
+            "justMyCode": true
+        },
+        {
+            "name": "app.py (Streamlit)",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "streamlit",
+            "args": [
+                "run",
+                "${workspaceFolder}/app.py",
+                "--server.port=8501"
+            ],
+            "cwd": "${workspaceFolder}",
+            "console": "integratedTerminal",
+            "justMyCode": true
+        }
+    ]
+}
