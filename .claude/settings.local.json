@@ -14,7 +14,17 @@
       "Bash(cat)",
       "Bash(echo \"EXIT:$?\")",
       "Bash(python3 -c \"from models import *; print\\(''models.py OK''\\)\")",
-      "Bash(python3:*)"
+      "Bash(python3:*)",
+      "PowerShell(pip install *)",
+      "PowerShell(python -c \"import sys; sys.path.insert\\(0,'C:/Users/Fatih/Desktop/OneDayorDayOne/src'\\); import generators; print\\(dir\\(generators\\)\\)\")",
+      "PowerShell(python --version; python -c \"import streamlit; print\\(streamlit.__file__\\)\")",
+      "PowerShell(python -m streamlit run \"C:\\\\Users\\\\Fatih\\\\Desktop\\\\OneDayorDayOne\\\\app.py\" --server.headless true 2>&1 | Select-Object -First 20)",
+      "PowerShell(Start-Process python -ArgumentList \"-m streamlit run `\"C:\\\\Users\\\\Fatih\\\\Desktop\\\\OneDayorDayOne\\\\app.py`\"\" -WindowStyle Normal)",
+      "Bash(Remove-Item -Force \"C:\\\\Users\\\\Fatih\\\\Desktop\\\\OneDayorDayOne\\\\src\\\\__pycache__\\\\generators.cpython-313.pyc\" -ErrorAction SilentlyContinue)",
+      "Bash(Remove-Item -Force \"C:\\\\Users\\\\Fatih\\\\Desktop\\\\OneDayorDayOne\\\\src\\\\__pycache__\\\\generators.cpython-310.pyc\" -ErrorAction SilentlyContinue)",
+      "Bash(Remove-Item -Force \"C:\\\\Users\\\\Fatih\\\\Desktop\\\\OneDayorDayOne\\\\src\\\\__pycache__\\\\app.cpython-313.pyc\" -ErrorAction SilentlyContinue)",
+      "Bash(Remove-Item -Force \"C:\\\\Users\\\\Fatih\\\\Desktop\\\\OneDayorDayOne\\\\src\\\\__pycache__\\\\app.cpython-310.pyc\" -ErrorAction SilentlyContinue)",
+      "Bash(Remove-Item -Force \"C:\\\\Users\\\\Fatih\\\\Desktop\\\\OneDayorDayOne\\\\__pycache__\\\\app.cpython-313.pyc\" -ErrorAction SilentlyContinue)"
     ]
   }
 }

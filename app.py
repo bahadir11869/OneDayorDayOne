@@ -16,7 +16,9 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "src"))
+_SRC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "src")
+if _SRC_DIR not in sys.path:
+    sys.path.insert(0, _SRC_DIR)
 
 from controllers import AdaptiveSoCController, UnmanagedController
 from generators import ArrivalGenerator, BackgroundLoadGenerator, Scenarios
@@ -420,6 +422,208 @@ def _fmt(m: int) -> str:
 
 
 # ══════════════════════════════════════════════════════════════════
+#  AYLIK SİMÜLASYON — kompakt günlük koşucu + 30 gün toplayıcı
+# ══════════════════════════════════════════════════════════════════
+
+def run_daily_compact(schedule: dict, bg_load: np.ndarray,
+                      config: ScenarioConfig, opt_config: dict = None) -> dict:
+    """Adaptif simülasyon — sadece günlük toplu metrikler döner (snapshot yok)."""
+    if opt_config is None:
+        opt_config = {}
+    opt_battery  = opt_config.get('battery_health', True)
+    opt_trafo    = opt_config.get('trafo_health', True)
+    reserve_kw   = float(opt_config.get('reserve_kw', 0.0))
+    opt_no_long  = opt_config.get('no_long_charge', True)
+    algo_enabled = opt_config.get('algo_enabled', True)
+
+    policy   = config.to_grid_limit_policy(use_dynamic=opt_trafo, theta_hs_target=98.0)
+    stations = copy.deepcopy(config.layout.stations)
+    ctrl     = AdaptiveSoCController(
+        stations, policy, bg_load,
+        use_dynamic_grid_limit=opt_trafo,
+        use_aging_cost=opt_battery,
+        w_urgency=1.5 if opt_no_long else 1.0,
+        w_aging=0.5   if opt_battery else 0.1,
+        aging_throttle_threshold=2.0 if opt_battery else 999.0,
+        max_ramp_kw_per_min=30.0 if opt_trafo else float('inf'),
+        use_keep_alive=opt_no_long,
+        use_soc_taper=opt_battery,
+        algo_enabled=algo_enabled,
+        limit_bias_kw=-reserve_kw,
+    )
+    is_thermal     = isinstance(policy, DynamicGridLimitPolicy)
+    overload_total = 0
+    power_log      = []
+
+    for minute in range(1440):
+        for ev in schedule.get(minute, []):
+            ctrl.queue.append(ev)
+
+        for s in ctrl.stations:
+            if not s.current_ev and ctrl.queue:
+                s.current_ev = ctrl.queue.pop(0)
+                s.current_ev.charge_start_minute = minute
+
+        allocs  = ctrl.allocate_power(minute)
+        limit   = ctrl.compute_limit(minute)
+        bg      = float(bg_load[minute])
+        ev_load = float(sum(allocs.values()))
+        total   = bg + ev_load
+        if total > limit:
+            overload_total += 1
+
+        ambient_temp = policy._ambient_temp(minute) if is_thermal else 25.0
+        for s in ctrl.stations:
+            if s.current_ev:
+                s.current_ev.update_battery_temp(ambient_temp, allocs[s.station_id])
+
+        for s in ctrl.stations:
+            if s.current_ev:
+                s.current_ev.apply_power(allocs[s.station_id], minute)
+                if s.current_ev.is_satisfied:
+                    s.current_ev.departure_minute = minute
+                    ctrl.completed.append(s.current_ev)
+                    s.current_ev = None
+
+        power_log.append(total)
+        ctrl.power_log.append(total)
+        ctrl.limit_log.append(limit)
+        if is_thermal:
+            policy.update(minute, total)
+
+    p = np.array(power_log)
+    return {
+        "energy_kwh":       round(float(sum(e.energy_delivered_kwh for e in ctrl.completed)), 1),
+        "completed":        int(len(ctrl.completed)),
+        "overload_minutes": int(overload_total),
+        "avg_wait":         round(float(np.mean([e.wait_time_minutes for e in ctrl.completed]))
+                                  if ctrl.completed else 0.0, 1),
+        "peak_power":       round(float(p.max()) if len(p) > 0 else 0.0, 1),
+        "peak_theta_hs":    round(float(policy.peak_hotspot) if is_thermal else 0.0, 2),
+        "aging_integral":   round(float(policy.aging_integral) if is_thermal else 0.0, 5),
+    }
+
+
+def run_monthly_simulation(days_data: list, config: ScenarioConfig,
+                           opt_config: dict = None) -> dict:
+    """30 günlük simülasyon — her gün bağımsız adaptif + algoritmasız koşu."""
+    daily_results = []
+    for day in days_data:
+        schedule: dict = {}
+        for v in day["vehicles"]:
+            m = v["arrival_minute"]
+            schedule.setdefault(m, []).append(EV(
+                v["session_id"], v["model_name"],
+                v["battery_capacity_kwh"], v["max_dc_power_kw"],
+                m, v["initial_soc"], target_soc=config.fleet.target_soc,
+            ))
+        bg_load = np.array(day["bg_load"])
+
+        algo  = run_daily_compact(copy.deepcopy(schedule), bg_load, config, opt_config)
+        unman = run_unmanaged(copy.deepcopy(schedule), bg_load, config)
+
+        daily_results.append({
+            "day_index":    day["day_index"],
+            "day_number":   day["day_number"],
+            "date":         day["date"],
+            "day_name":     day["day_name"],
+            "is_weekend":   day["is_weekend"],
+            "vehicle_count": day["vehicle_count"],
+
+            "algo_energy_kwh":     algo["energy_kwh"],
+            "algo_completed":      algo["completed"],
+            "algo_overload_min":   algo["overload_minutes"],
+            "algo_avg_wait":       algo["avg_wait"],
+            "algo_peak_power":     algo["peak_power"],
+            "algo_peak_ths":       algo["peak_theta_hs"],
+            "algo_aging_integral": algo["aging_integral"],
+
+            "unman_energy_kwh":    unman["total_energy"],
+            "unman_completed":     unman["completed_count"],
+            "unman_overload_min":  unman["overload_minutes"],
+            "unman_avg_wait":      unman["avg_wait"],
+            "unman_peak_power":    unman["peak_power"],
+            "unman_peak_ths":      round(float(unman.get("peak_hotspot", 0.0)), 2),
+            "unman_aging_integral": round(float(unman.get("aging_integral", 0.0)), 5),
+        })
+
+    def _s(k):  return round(sum(d[k] for d in daily_results), 2)
+    def _a(k):  return round(sum(d[k] for d in daily_results) / len(daily_results), 2)
+    def _ag(g, k): return round(sum(d[k] for d in g) / len(g), 2) if g else 0.0
+
+    wkday = [d for d in daily_results if not d["is_weekend"]]
+    wkend = [d for d in daily_results if d["is_weekend"]]
+
+    return {
+        "days":   daily_results,
+        "n_days": len(daily_results),
+        "totals": {
+            "algo_energy_kwh":    _s("algo_energy_kwh"),
+            "unman_energy_kwh":   _s("unman_energy_kwh"),
+            "algo_overload_min":  _s("algo_overload_min"),
+            "unman_overload_min": _s("unman_overload_min"),
+            "algo_completed":     _s("algo_completed"),
+            "unman_completed":    _s("unman_completed"),
+        },
+        "avgs": {
+            "algo_avg_wait":        _a("algo_avg_wait"),
+            "unman_avg_wait":       _a("unman_avg_wait"),
+            "algo_peak_power":      _a("algo_peak_power"),
+            "unman_peak_power":     _a("unman_peak_power"),
+            "algo_aging_integral":  _a("algo_aging_integral"),
+            "unman_aging_integral": _a("unman_aging_integral"),
+        },
+        "weekday_avgs": {
+            "algo_energy":   _ag(wkday, "algo_energy_kwh"),
+            "unman_energy":  _ag(wkday, "unman_energy_kwh"),
+            "algo_overload": _ag(wkday, "algo_overload_min"),
+            "unman_overload":_ag(wkday, "unman_overload_min"),
+            "algo_wait":     _ag(wkday, "algo_avg_wait"),
+            "unman_wait":    _ag(wkday, "unman_avg_wait"),
+        },
+        "weekend_avgs": {
+            "algo_energy":   _ag(wkend, "algo_energy_kwh"),
+            "unman_energy":  _ag(wkend, "unman_energy_kwh"),
+            "algo_overload": _ag(wkend, "algo_overload_min"),
+            "unman_overload":_ag(wkend, "unman_overload_min"),
+            "algo_wait":     _ag(wkend, "algo_avg_wait"),
+            "unman_wait":    _ag(wkend, "unman_avg_wait"),
+        },
+    }
+
+
+def load_monthly_and_simulate(scenario_key: str, generate_new: bool,
+                               opt_config: dict = None) -> dict:
+    """Aylık dataset'i yükle veya üret, sonra 30 günlük simülasyonu çalıştır."""
+    import datetime
+    from monthly_gen import MonthlyDataGenerator
+    scenario_fn = getattr(Scenarios, scenario_key)
+    config: ScenarioConfig = scenario_fn()
+
+    if not generate_new and os.path.exists(MONTHLY_DATASET_FILE):
+        with open(MONTHLY_DATASET_FILE, "r", encoding="utf-8") as f:
+            monthly_data = json.load(f)
+        if monthly_data.get("scenario") != config.name:
+            generate_new = True
+
+    if generate_new or not os.path.exists(MONTHLY_DATASET_FILE):
+        rng  = np.random.default_rng(42)
+        gen  = MonthlyDataGenerator(config, n_days=30)
+        days = gen.generate(rng)
+        monthly_data = {
+            "scenario":     config.name,
+            "generated_at": datetime.datetime.now().isoformat(),
+            "n_days":       30,
+            "days":         days,
+        }
+        os.makedirs(os.path.dirname(MONTHLY_DATASET_FILE), exist_ok=True)
+        with open(MONTHLY_DATASET_FILE, "w", encoding="utf-8") as f:
+            json.dump(monthly_data, f, ensure_ascii=False)
+
+    return run_monthly_simulation(monthly_data["days"], config, opt_config)
+
+
+# ══════════════════════════════════════════════════════════════════
 #  VERİ YÜKLEME
 # ══════════════════════════════════════════════════════════════════
 
@@ -432,7 +636,8 @@ SCENARIO_MAP = {
     "🔥 Stres Testi (Yaz)":  "stress_test",
 }
 
-DATASET_FILE = os.path.join(os.path.dirname(__file__), "DATASET", "dataset.json")
+DATASET_FILE         = os.path.join(os.path.dirname(__file__), "DATASET", "dataset.json")
+MONTHLY_DATASET_FILE = os.path.join(os.path.dirname(__file__), "DATASET", "dataset_monthly.json")
 
 
 def load_and_simulate(scenario_key: str, generate_new: bool, ev_count_override: int = 0, opt_config: dict = None):
@@ -1438,6 +1643,312 @@ def render_best_worst_panel(snapshots: list, unmanaged: dict,
 
 
 # ══════════════════════════════════════════════════════════════════
+#  AYLIK ANALİZ UI
+# ══════════════════════════════════════════════════════════════════
+
+def _monthly_day_labels(days: list) -> list:
+    """Gün etiketleri — haftasonu 'W' ile işaretli."""
+    return [
+        f"{'[W] ' if d['is_weekend'] else ''}{d['day_name'][:3]} {d['day_number']:02d}"
+        for d in days
+    ]
+
+
+def _add_weekend_shapes(fig, days: list, labels: list):
+    """Bar/scatter grafiklere haftasonu arka plan şeridi ekle (gri-sarı)."""
+    for i, d in enumerate(days):
+        if d["is_weekend"]:
+            fig.add_shape(
+                type="rect", xref="x", yref="paper",
+                x0=i - 0.48, x1=i + 0.48, y0=0, y1=1,
+                fillcolor="rgba(245,158,11,0.07)", line_width=0, layer="below",
+            )
+
+
+def render_monthly_kpis(mr: dict):
+    """30 günlük özet metrik kartları."""
+    t = mr["totals"]
+    a = mr["avgs"]
+    n = mr["n_days"]
+
+    diff_energy  = round(t["algo_energy_kwh"] - t["unman_energy_kwh"], 1)
+    diff_over    = t["unman_overload_min"] - t["algo_overload_min"]
+    diff_wait    = round(a["unman_avg_wait"] - a["algo_avg_wait"], 1)
+    diff_aging   = round(a["unman_aging_integral"] - a["algo_aging_integral"], 5)
+
+    energy_col   = "#22c55e" if diff_energy >= 0 else "#ef4444"
+    st.markdown(
+        f'<div style="background:#0f1f12;border:1px solid #166534;border-radius:8px;'
+        f'padding:12px 18px;margin-bottom:14px;font-size:0.86em;color:#bbf7d0;">'
+        f'<b>📊 {n} Günlük Özet — Adaptif vs Algoritmasız</b><br>'
+        f'Enerji: Adaptif <b>{t["algo_energy_kwh"]:,.0f}</b> / Alg.sız {t["unman_energy_kwh"]:,.0f} kWh '
+        f'<span style="color:{energy_col}">({"+" if diff_energy>=0 else ""}{diff_energy:,.1f} kWh)</span>'
+        f'&nbsp;|&nbsp; Aşım: Adaptif <b>{t["algo_overload_min"]} dk</b> / Alg.sız {t["unman_overload_min"]} dk '
+        f'<span style="color:#22c55e">(-{diff_over} dk)</span>'
+        f'&nbsp;|&nbsp; Ort. Bekleme: Adaptif <b>{a["algo_avg_wait"]:.1f} dk</b> / Alg.sız {a["unman_avg_wait"]:.1f} dk '
+        f'<span style="color:#22c55e">(-{diff_wait:.1f} dk)</span>'
+        f'&nbsp;|&nbsp; Ort. Trafo Yaşlanma: Adaptif <b>{a["algo_aging_integral"]:.5f}</b> / Alg.sız {a["unman_aging_integral"]:.5f} '
+        f'<span style="color:#22c55e">(-{diff_aging:.5f})</span>'
+        f'</div>',
+        unsafe_allow_html=True,
+    )
+
+    c1, c2, c3, c4, c5 = st.columns(5)
+    c1.metric("⚡ Toplam Enerji",   f"{t['algo_energy_kwh']:,.0f} kWh",
+              f"+{diff_energy:,.1f} kWh vs alg.sız")
+    c2.metric("🚨 Toplam Aşım",    f"{t['algo_overload_min']} dk",
+              f"-{diff_over} dk vs alg.sız")
+    c3.metric("⏱ Ort. Bekleme",    f"{a['algo_avg_wait']:.1f} dk",
+              f"-{diff_wait:.1f} dk vs alg.sız")
+    c4.metric("✅ Tamamlanan",      f"{int(t['algo_completed'])} şarj",
+              f"alg.sız: {int(t['unman_completed'])}")
+    c5.metric("🔌 Ort. Trafo Yaş.", f"{a['algo_aging_integral']:.5f}",
+              f"-{diff_aging:.5f} vs alg.sız")
+
+
+def render_monthly_charts(mr: dict):
+    """Aylık grafik paketi: 5 grafik + haftaiçi/haftsonu karşılaştırması."""
+    days   = mr["days"]
+    labels = _monthly_day_labels(days)
+
+    algo_energy   = [d["algo_energy_kwh"]    for d in days]
+    unman_energy  = [d["unman_energy_kwh"]   for d in days]
+    algo_over     = [d["algo_overload_min"]  for d in days]
+    unman_over    = [d["unman_overload_min"] for d in days]
+    algo_wait     = [d["algo_avg_wait"]      for d in days]
+    unman_wait    = [d["unman_avg_wait"]     for d in days]
+    algo_peak     = [d["algo_peak_power"]    for d in days]
+    unman_peak    = [d["unman_peak_power"]   for d in days]
+    algo_aging_d  = [d["algo_aging_integral"]  for d in days]
+    unman_aging_d = [d["unman_aging_integral"] for d in days]
+
+    # Haftsonu barları için farklı renk seti
+    algo_bar_colors  = ["#60a5fa" if d["is_weekend"] else "#38bdf8" for d in days]
+    unman_bar_colors = ["#fb923c" if d["is_weekend"] else "#f97316" for d in days]
+
+    _LAYOUT = dict(
+        paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="#0d1117",
+        font=dict(color="#94a3b8", size=10),
+        legend=dict(orientation="h", y=1.16, x=0, bgcolor="rgba(0,0,0,0)"),
+        margin=dict(l=0, r=0, t=42, b=65),
+        xaxis=dict(showgrid=False, tickfont=dict(size=8), tickangle=-55),
+        yaxis=dict(showgrid=True, gridcolor="#1e293b"),
+        hovermode="x unified",
+    )
+
+    # ── Grafik 1: Günlük Teslim Edilen Enerji ───────────────────
+    fig1 = go.Figure()
+    fig1.add_trace(go.Bar(
+        x=labels, y=algo_energy, name="Adaptif",
+        marker_color=algo_bar_colors, opacity=0.90,
+        hovertemplate="%{x}<br>%{y:.1f} kWh<extra>Adaptif</extra>",
+    ))
+    fig1.add_trace(go.Bar(
+        x=labels, y=unman_energy, name="Algoritmasız",
+        marker_color=unman_bar_colors, opacity=0.65,
+        hovertemplate="%{x}<br>%{y:.1f} kWh<extra>Alg.sız</extra>",
+    ))
+    fig1.update_layout(
+        barmode="group",
+        title=dict(text="Günlük Teslim Edilen Enerji (kWh)  <span style='color:#60a5fa;font-size:0.8em'>"
+                        "■ Haftasonu (soluk renk)</span>", font=dict(size=12)),
+        height=300, **_LAYOUT,
+    )
+    _add_weekend_shapes(fig1, days, labels)
+
+    # ── Grafik 2: Aşım Süresi ────────────────────────────────────
+    fig2 = go.Figure()
+    fig2.add_trace(go.Bar(
+        x=labels, y=algo_over, name="Adaptif",
+        marker_color=algo_bar_colors, opacity=0.90,
+        hovertemplate="%{x}<br>%{y} dk<extra>Adaptif</extra>",
+    ))
+    fig2.add_trace(go.Bar(
+        x=labels, y=unman_over, name="Algoritmasız",
+        marker_color=unman_bar_colors, opacity=0.65,
+        hovertemplate="%{x}<br>%{y} dk<extra>Alg.sız</extra>",
+    ))
+    fig2.update_layout(
+        barmode="group", title=dict(text="Günlük Limit Aşım Süresi (dk)", font=dict(size=12)),
+        height=260, **_LAYOUT,
+    )
+    _add_weekend_shapes(fig2, days, labels)
+
+    # ── Grafik 3: Ort. Bekleme Süresi ────────────────────────────
+    fig3 = go.Figure()
+    fig3.add_trace(go.Scatter(
+        x=labels, y=algo_wait, name="Adaptif",
+        line=dict(color="#38bdf8", width=2.5), mode="lines+markers",
+        marker=dict(size=[8 if d["is_weekend"] else 5 for d in days],
+                    symbol=["diamond" if d["is_weekend"] else "circle" for d in days]),
+        hovertemplate="%{x}<br>%{y:.1f} dk<extra>Adaptif</extra>",
+    ))
+    fig3.add_trace(go.Scatter(
+        x=labels, y=unman_wait, name="Algoritmasız",
+        line=dict(color="#f97316", width=2.5, dash="dot"), mode="lines+markers",
+        marker=dict(size=[8 if d["is_weekend"] else 5 for d in days],
+                    symbol=["diamond" if d["is_weekend"] else "circle" for d in days]),
+        hovertemplate="%{x}<br>%{y:.1f} dk<extra>Alg.sız</extra>",
+    ))
+    fig3.update_layout(
+        title=dict(text="Ortalama Bekleme Süresi (dk)  <span style='color:#f59e0b;font-size:0.8em'>"
+                        "◆ = Haftasonu</span>", font=dict(size=12)),
+        height=260, **_LAYOUT,
+    )
+    _add_weekend_shapes(fig3, days, labels)
+
+    # ── Grafik 4: Pik Güç ────────────────────────────────────────
+    fig4 = go.Figure()
+    fig4.add_trace(go.Scatter(
+        x=labels, y=algo_peak, name="Adaptif",
+        line=dict(color="#38bdf8", width=2.5), mode="lines+markers",
+        marker=dict(size=[8 if d["is_weekend"] else 5 for d in days]),
+        hovertemplate="%{x}<br>%{y:.0f} kW<extra>Adaptif</extra>",
+    ))
+    fig4.add_trace(go.Scatter(
+        x=labels, y=unman_peak, name="Algoritmasız",
+        line=dict(color="#f97316", width=2.5, dash="dot"), mode="lines+markers",
+        marker=dict(size=[8 if d["is_weekend"] else 5 for d in days]),
+        hovertemplate="%{x}<br>%{y:.0f} kW<extra>Alg.sız</extra>",
+    ))
+    fig4.update_layout(
+        title=dict(text="Günlük Pik Güç (kW)", font=dict(size=12)),
+        height=260, **_LAYOUT,
+    )
+    _add_weekend_shapes(fig4, days, labels)
+
+    # ── Grafik 5: Kümülatif Trafo Yaşlanma ──────────────────────
+    fig5 = go.Figure()
+    cum_algo  = list(np.cumsum(algo_aging_d))
+    cum_unman = list(np.cumsum(unman_aging_d))
+    fig5.add_trace(go.Scatter(
+        x=labels, y=cum_algo, name="Adaptif",
+        line=dict(color="#38bdf8", width=2.5),
+        fill="tozeroy", fillcolor="rgba(56,189,248,0.10)",
+        hovertemplate="%{x}<br>%{y:.4f}<extra>Adaptif Kümülatif</extra>",
+    ))
+    fig5.add_trace(go.Scatter(
+        x=labels, y=cum_unman, name="Algoritmasız",
+        line=dict(color="#ef4444", width=2.5, dash="dot"),
+        fill="tonexty", fillcolor="rgba(239,68,68,0.08)",
+        hovertemplate="%{x}<br>%{y:.4f}<extra>Alg.sız Kümülatif</extra>",
+    ))
+    fig5.update_layout(
+        title=dict(text="Kümülatif Trafo Yaşlanma İntegrali V(t)", font=dict(size=12)),
+        height=260, **_LAYOUT,
+    )
+    _add_weekend_shapes(fig5, days, labels)
+
+    # ── Yerleşim ─────────────────────────────────────────────────
+    st.plotly_chart(fig1, use_container_width=True, config={"displayModeBar": False},
+                    key="monthly_energy_chart")
+    cc1, cc2 = st.columns(2)
+    with cc1:
+        st.plotly_chart(fig2, use_container_width=True, config={"displayModeBar": False},
+                        key="monthly_overload_chart")
+        st.plotly_chart(fig4, use_container_width=True, config={"displayModeBar": False},
+                        key="monthly_peak_chart")
+    with cc2:
+        st.plotly_chart(fig3, use_container_width=True, config={"displayModeBar": False},
+                        key="monthly_wait_chart")
+        st.plotly_chart(fig5, use_container_width=True, config={"displayModeBar": False},
+                        key="monthly_aging_chart")
+
+    # ── Haftaiçi vs Haftasonu karşılaştırma ─────────────────────
+    _render_weekday_weekend_bar(mr)
+
+    # ── Günlük detay tablosu ─────────────────────────────────────
+    with st.expander("📋 Günlük Detay Tablosu", expanded=False):
+        rows = []
+        for d in days:
+            de = round(d["algo_energy_kwh"] - d["unman_energy_kwh"], 1)
+            do = d["unman_overload_min"] - d["algo_overload_min"]
+            dw = round(d["unman_avg_wait"] - d["algo_avg_wait"], 1)
+            rows.append({
+                "Gün":               f"{'★' if d['is_weekend'] else ''} {d['day_name']} {d['day_number']:02d}",
+                "Araç":              d["vehicle_count"],
+                "Enerji Adaptif":    d["algo_energy_kwh"],
+                "Enerji Alg.sız":    d["unman_energy_kwh"],
+                "Enerji Farkı":      f"+{de}" if de >= 0 else str(de),
+                "Aşım Adaptif (dk)": d["algo_overload_min"],
+                "Aşım Alg.sız (dk)": d["unman_overload_min"],
+                "Aşım Azalması (dk)":do,
+                "Bekleme Adaptif":   d["algo_avg_wait"],
+                "Bekleme Alg.sız":   d["unman_avg_wait"],
+                "Bekleme Farkı":     f"-{dw}" if dw >= 0 else f"+{-dw}",
+                "Pik θ_hs Adaptif":  d["algo_peak_ths"],
+                "Pik θ_hs Alg.sız":  d["unman_peak_ths"],
+                "Yaşlanma Adaptif":  d["algo_aging_integral"],
+                "Yaşlanma Alg.sız":  d["unman_aging_integral"],
+            })
+        df_m = pd.DataFrame(rows)
+
+        def _col_e(val):
+            if not isinstance(val, str): return ""
+            try:
+                n = float(val.replace("+", ""))
+                return "color: #22c55e" if n > 0 else ("color: #ef4444" if n < 0 else "")
+            except Exception: return ""
+
+        def _col_n(val):
+            if not isinstance(val, (int, float)): return ""
+            return "color: #22c55e" if val > 0 else ("color: #ef4444" if val < 0 else "")
+
+        st.caption("★ = Haftasonu")
+        st.dataframe(
+            df_m.style
+            .map(_col_e, subset=["Enerji Farkı", "Bekleme Farkı"])
+            .map(_col_n, subset=["Aşım Azalması (dk)"]),
+            use_container_width=True, hide_index=True,
+        )
+        csv_m = df_m.to_csv(index=False, encoding="utf-8-sig")
+        st.download_button("⬇️ CSV (Aylık)", csv_m,
+                           file_name="aylik_simulasyon.csv", mime="text/csv")
+
+
+def _render_weekday_weekend_bar(mr: dict):
+    wa = mr.get("weekday_avgs", {})
+    wk = mr.get("weekend_avgs", {})
+    if not wa or not wk:
+        return
+
+    st.markdown("### 📅 Haftaiçi vs Haftasonu Ort. Karşılaştırma")
+    categories = ["Enerji (kWh/gün)", "Aşım (dk/gün)", "Bekleme (dk)"]
+    fig = go.Figure()
+    fig.add_trace(go.Bar(
+        name="Adaptif — Haftaiçi",    x=categories,
+        y=[wa.get("algo_energy",0), wa.get("algo_overload",0), wa.get("algo_wait",0)],
+        marker_color="#38bdf8", opacity=0.90,
+    ))
+    fig.add_trace(go.Bar(
+        name="Adaptif — Haftasonu",   x=categories,
+        y=[wk.get("algo_energy",0), wk.get("algo_overload",0), wk.get("algo_wait",0)],
+        marker_color="#60a5fa", opacity=0.70,
+    ))
+    fig.add_trace(go.Bar(
+        name="Alg.sız — Haftaiçi",    x=categories,
+        y=[wa.get("unman_energy",0), wa.get("unman_overload",0), wa.get("unman_wait",0)],
+        marker_color="#f97316", opacity=0.90,
+    ))
+    fig.add_trace(go.Bar(
+        name="Alg.sız — Haftasonu",   x=categories,
+        y=[wk.get("unman_energy",0), wk.get("unman_overload",0), wk.get("unman_wait",0)],
+        marker_color="#fb923c", opacity=0.70,
+    ))
+    fig.update_layout(
+        barmode="group", height=300,
+        margin=dict(l=0, r=0, t=8, b=0),
+        paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="#0d1117",
+        font=dict(color="#94a3b8", size=10),
+        legend=dict(orientation="h", y=1.14, x=0, bgcolor="rgba(0,0,0,0)"),
+        xaxis=dict(showgrid=False),
+        yaxis=dict(showgrid=True, gridcolor="#1e293b"),
+    )
+    st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False},
+                    key="weekday_weekend_bar")
+
+
+# ══════════════════════════════════════════════════════════════════
 #  ANA UYGULAMA
 # ══════════════════════════════════════════════════════════════════
 
@@ -1460,6 +1971,7 @@ def main():
         ("frame", 0), ("running", False),
         ("replay_start", 0), ("replay_end", 1439),
         ("last_frame_time", None),
+        ("monthly_results", None),
     ]:
         if k not in st.session_state:
             st.session_state[k] = v
@@ -1527,6 +2039,33 @@ def main():
                     return
             st.success("✅ Hazır!")
 
+        # ── Aylık Simülasyon ─────────────────────────────────────
+        st.divider()
+        st.markdown("**📅 Aylık Simülasyon (30 Gün)**")
+        if st.button("📅 1 Ay Simüle Et", use_container_width=True):
+            _opt_cfg_monthly = {
+                'battery_health': opt_battery,
+                'trafo_health':   opt_trafo,
+                'reserve_kw':     float(reserve_kw) if opt_reserve else 0.0,
+                'no_long_charge': opt_no_long,
+                'algo_enabled':   algo_enabled,
+            }
+            with st.spinner("30 gün simüle ediliyor — lütfen bekleyin (~20-30 sn)..."):
+                try:
+                    mr = load_monthly_and_simulate(
+                        scenario_key, generate_new, opt_config=_opt_cfg_monthly
+                    )
+                    st.session_state.monthly_results = mr
+                    st.success(f"✅ {mr['n_days']} gün tamamlandı!")
+                except Exception as e:
+                    st.error(f"Aylık simülasyon hatası: {e}")
+                    import traceback; st.code(traceback.format_exc())
+
+        if st.session_state.monthly_results:
+            if st.button("🗑 Aylık Sonuçları Temizle", use_container_width=True):
+                st.session_state.monthly_results = None
+                st.rerun()
+
         st.divider()
         st.markdown("**Oynatma**")
         speed = st.slider("Hız (dk/sn)", 1, 120, 20)
@@ -1581,14 +2120,46 @@ def main():
         )
 
     # ── İçerik yok ───────────────────────────────────────────────
-    if st.session_state.snapshots is None:
+    if st.session_state.snapshots is None and st.session_state.monthly_results is None:
         st.markdown(
             "<h2 style='color:#60a5fa;text-align:center;margin-top:80px'>⚡ EV Yük Dengeleme — Adaptif</h2>"
-            "<p style='color:#64748b;text-align:center'>Sol menüden senaryo seçin ve <b>Simülasyonu Hazırla</b> butonuna basın.</p>",
+            "<p style='color:#64748b;text-align:center'>Sol menüden senaryo seçin ve "
+            "<b>Simülasyonu Hazırla</b> (günlük) veya <b>1 Ay Simüle Et</b> butonuna basın.</p>",
             unsafe_allow_html=True,
         )
         return
 
+    # ── Görünüm seçimi (her ikisi de mevcutsa) ───────────────────
+    has_daily   = st.session_state.snapshots is not None
+    has_monthly = st.session_state.monthly_results is not None
+
+    if has_daily and has_monthly:
+        active_view = st.radio(
+            "Görünüm", ["🕐 Günlük Simülasyon", "📅 Aylık Analiz"],
+            horizontal=True, key="view_radio",
+        )
+    elif has_monthly:
+        active_view = "📅 Aylık Analiz"
+    else:
+        active_view = "🕐 Günlük Simülasyon"
+
+    # ── Aylık Analiz içeriği ─────────────────────────────────────
+    if active_view == "📅 Aylık Analiz":
+        mr = st.session_state.monthly_results
+        st.markdown(
+            "<h3 style='color:#60a5fa;margin-bottom:4px'>📅 Aylık Simülasyon — Haziran 2026</h3>",
+            unsafe_allow_html=True,
+        )
+        st.caption(
+            "30 günlük bağımsız simülasyon. Sarı/soluk barlar haftasonunu gösterir. "
+            "[W] etiketli günler Cumartesi-Pazar."
+        )
+        render_monthly_kpis(mr)
+        st.divider()
+        render_monthly_charts(mr)
+        return
+
+    # ── Günlük simülasyon içeriği ─────────────────────────────────
     snap         = st.session_state.snapshots[st.session_state.frame]
     unman        = st.session_state.unmanaged
     vlog         = st.session_state.vehicle_log
